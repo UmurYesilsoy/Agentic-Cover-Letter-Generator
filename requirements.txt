@@ -1,0 +1,17 @@
+# Packages agent.py imports directly (or via its dependencies), pinned to versions
+# verified working in this project's .venv.
+python-dotenv==1.2.3
+pydantic==2.13.5
+langchain-anthropic==1.7.2
+langchain-core==1.6.3
+langgraph==1.2.11
+langgraph-sdk==0.4.4
+
+# Only needed if a CV or job posting is a .pdf / .docx file (read_document() imports these
+# lazily, only on that code path).
+pypdf==6.18.1
+python-docx==1.2.0
+
+# Not imported by agent.py itself - only needed if you want `run()` to route through a live
+# Studio session, i.e. to run `langgraph dev` locally.
+# langgraph-cli[inmem]==0.4.31

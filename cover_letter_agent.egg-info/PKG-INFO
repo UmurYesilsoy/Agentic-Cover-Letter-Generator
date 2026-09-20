@@ -1,0 +1,9 @@
+Metadata-Version: 2.4
+Name: cover-letter-agent
+Version: 0.1.0
+Requires-Python: >=3.13
+Requires-Dist: langgraph
+Requires-Dist: langchain-anthropic
+Requires-Dist: python-dotenv
+Requires-Dist: pypdf
+Requires-Dist: python-docx

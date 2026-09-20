@@ -22,6 +22,7 @@ from datetime import date
 from pathlib import Path
 from typing import Optional, TypedDict
 
+import httpx
 from dotenv import load_dotenv
 
 # must run before the langchain/langgraph imports below: langsmith caches whether tracing is
@@ -99,22 +100,27 @@ LOGIN_WALL = re.compile(r"(sign in|log in|create an account|enable javascript|ca
                         r"access denied|403 forbidden)", re.I)
 
 
+READER_URL = "https://r.jina.ai/"
+
+
 def fetch_job_from_url(url: str) -> Optional[str]:
-    """Fetch a posting with Claude's web_fetch tool. Returns None when the page is unusable."""
-    fetcher = ChatAnthropic(model=cfg.model, max_tokens=8000).bind_tools(
-        [{"type": "web_fetch_20260209", "name": "web_fetch", "max_uses": 2}])
+    """Fetch a posting via Jina AI's Reader API - a JS-rendering proxy that handles the
+    JavaScript-heavy job boards (LinkedIn, Workday, Greenhouse) that Claude's own web_fetch tool
+    reliably failed on, since that tool never executes JavaScript at all. Returns None when the
+    page is unusable (fetch failed, login wall, or too short to be a real posting). Set
+    JINA_API_KEY in .env for higher rate limits; works without one for light use."""
+    headers = {"Accept": "text/plain"}
+    if os.environ.get("JINA_API_KEY"):
+        headers["Authorization"] = f"Bearer {os.environ['JINA_API_KEY']}"
     try:
-        message = fetcher.invoke([HumanMessage(content=(
-            f"Fetch {url} and reproduce the job advertisement it contains, verbatim and in full: "
-            f"title, responsibilities and requirements. If the page does not contain a job "
-            f"advertisement - a login wall, an error, or an empty shell - reply with exactly "
-            f"NO_POSTING_FOUND and nothing else."))])
+        response = httpx.get(READER_URL + url, headers=headers, timeout=30)
+        response.raise_for_status()
     except Exception as exc:
         print(f"[inputs] fetch failed: {type(exc).__name__}")
         return None
 
-    text = message.text if isinstance(message.text, str) else message.text()
-    if "NO_POSTING_FOUND" in text or len(text.split()) < 150 or LOGIN_WALL.search(text[:600]):
+    text = response.text
+    if len(text.split()) < 150 or LOGIN_WALL.search(text[:600]):
         print("[inputs] the URL did not yield a usable posting")
         return None
     return text

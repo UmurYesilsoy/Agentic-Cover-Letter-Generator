@@ -6,3 +6,4 @@ cover_letter_agent.egg-info/SOURCES.txt
 cover_letter_agent.egg-info/dependency_links.txt
 cover_letter_agent.egg-info/requires.txt
 cover_letter_agent.egg-info/top_level.txt
+tests/test_api.py

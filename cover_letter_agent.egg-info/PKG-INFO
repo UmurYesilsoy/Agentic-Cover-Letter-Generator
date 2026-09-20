@@ -3,7 +3,12 @@ Name: cover-letter-agent
 Version: 0.1.0
 Requires-Python: >=3.13
 Requires-Dist: langgraph
+Requires-Dist: langgraph-sdk
 Requires-Dist: langchain-anthropic
+Requires-Dist: langchain-core
+Requires-Dist: pydantic
 Requires-Dist: python-dotenv
 Requires-Dist: pypdf
 Requires-Dist: python-docx
+Requires-Dist: fastapi[standard]
+Requires-Dist: httpx

@@ -11,8 +11,7 @@ dependencies = [
     "python-dotenv",
     "pypdf",
     "python-docx",
-    "fastapi",
-    "uvicorn",
+    "fastapi[standard]",
 ]
 
 [build-system]

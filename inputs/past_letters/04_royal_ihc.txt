@@ -1,0 +1,16 @@
+Dear Hiring Manager,
+
+I am excited to apply for the Data Science, AI & Autonomous Maritime Systems Engineer position at Royal IHC. The opportunity to develop intelligent, autonomous solutions for full-scale maritime systems strongly appeals to me. Royal IHC's long-standing engineering heritage, its commitment to sustainable innovation toward a net-zero future, and its focus on bringing advanced technologies from concept to operational vessels resonate deeply with my passion for applying data science to real-world, safety-critical systems where performance and reliability truly matter.
+
+I hold a bachelor's degree in mechanical engineering and am familiar with core systems engineering principles, including the V-model. Through my experience in the high-tech and defence industries in the Netherlands and Turkey, I have gained hands-on exposure to the full engineering and validation cycle - from requirements definition and integration to testing and operational validation. This background enables me to understand how algorithms must interface with complex physical systems and perform under real operational constraints.
+
+I completed an Engineering Doctorate (EngD) in Data Science last year. During this program, I led and contributed to projects involving supervised and unsupervised learning, reinforcement learning, and generative AI across diverse industries. I was responsible for the entire lifecycle - from problem formulation to deployment-ready prototypes - developing a strong ability to translate business and engineering challenges into structured data science solutions. I particularly enjoy bridging abstract models and tangible impact.
+
+In two EngD team projects resembling exploratory R&D initiatives, I developed a hand-gesture recognition system to guide operators in a manual assembly station and built a simulation environment in a game engine to train aerial vehicles in collaborative navigation, collision avoidance, and noise mitigation. Seeing these concepts evolve into functional prototypes reinforced my motivation to work in environments where experimentation, simulation, and real-world validation come together - precisely the setting described for this role.
+
+While I have explored generative AI and LLM-based applications, my core strengths lie in data analysis and machine learning grounded in strong mathematical and statistical foundations. I am confident in developing robust, scalable AI solutions in Python and integrating them into complex systems. My T-shaped profile - combining technical depth in machine learning with cross-functional project and stakeholder management experience - enables me to contribute effectively as both a technical expert and a collaborative team player.
+
+I would welcome the opportunity to contribute to Royal IHC's Technology and Innovation department and help shape the next generation of intelligent maritime systems.
+
+Kind regards,
+Umur Yesilsoy

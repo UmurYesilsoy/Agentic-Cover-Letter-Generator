@@ -1,0 +1,14 @@
+Dear Hiring Manager,
+
+I am excited to apply for the Senior Data Scientist position at Vinted Go. Your mission to build an in-house logistics carrier powered by data science, optimisation, and simulation strongly resonates with my background and interests. I am particularly motivated by the opportunity to work on real-world transportation and logistics challenges - such as routing, forecasting, and network optimisation - where machine learning can directly improve operational efficiency and user experience at scale.
+
+I hold a bachelor's degree in mechanical engineering, which has given me a strong foundation in systems thinking and modelling physical processes - highly relevant to Vinted Go's logistics network. My experience in high-tech and defence industries has exposed me to complex, real-world systems where algorithms must perform under operational constraints. This perspective would allow me to contribute effectively to problems such as network capacity, warehouse operations, and simulation, ensuring that data science solutions are both practical and impactful.
+
+I completed an Engineering Doctorate (EngD) in Data Science, where I developed machine learning solutions end-to-end across multiple domains. I worked with supervised and unsupervised learning, reinforcement learning, and optimisation-related problems, always focusing on translating business needs into scalable solutions. During my Master's, I also took a course on optimisation, which I would be keen to refresh and deepen to fully contribute to routing and logistics optimisation challenges at Vinted Go.
+
+While I have explored generative AI, my core strengths lie in building robust machine learning solutions grounded in strong statistical and analytical foundations. I am comfortable owning problems end-to-end - from scoping and experimentation to production - and collaborating with cross-functional teams. I believe this aligns well with Vinted Go's need for data scientists who can independently drive high-impact initiatives while contributing to a broader data science roadmap.
+
+Thank you for considering my application. I am excited about the opportunity to contribute to Vinted Go's growth by developing data-driven solutions that optimise logistics operations and enhance the shipping experience for millions of users. I would welcome the opportunity to further discuss how my background can support your data science ambitions.
+
+Yours sincerely,
+Umur Yesilsoy

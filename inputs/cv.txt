@@ -1,0 +1,65 @@
+Umur Yesilsoy
+
+PROFESSIONAL SUMMARY
+With nearly a decade of experience in stakeholder and project management across diverse industries, I discovered my true passion for machine learning and artificial intelligence. This realization inspired a pivotal career shift, leading me to step away from my position in the semiconductor industry to pursue advanced studies. I recently earned my Engineering Doctorate in Data Science from TU/e, where I honed my expertise in traditional machine learning and generative AI. As a problem solver with a strong engineering foundation, I excel at developing systematic approaches to address complex challenges across various domains. My unique combination of technical proficiency, stakeholder management skills, and hands-on experience with cutting-edge AI technologies positions me to contribute effectively to innovative projects. I am eager to leverage my expertise to drive impactful, data-driven solutions.
+
+PROFESSIONAL EXPERIENCE
+
+Sep. 2025 - Dec. 2025 | FEC Model Specialist | DLL
+- Conducted annual monitoring of a Customer Due Diligence (CDD) model within the Financial Economic Crime (FEC) domain, including performance testing, reassessment of key assumptions, and evaluation of model usage to ensure continued alignment with its intended objectives under current conditions.
+
+Feb. 2025 - Aug. 2025 | Postgraduate AI Research Fellow | KPN
+- Fine-tuned open-source multilingual embedding models for domain-specific retrieval in RAG systems, using a custom multi-stage training pipeline built with the Sentence Transformers library and synthetic datasets generated via GPT-4.
+- Improved model performance through iterative semi-hard negative mining for triplet loss training, resulting in embedding models that outperformed OpenAI and Cohere baselines, despite having significantly lower dimensionality.
+
+Jun. 2024 - Jan. 2025 | EngD Final Project | KPN
+"Development of an Evaluation Framework for RAG Use Case Optimization"
+- Collaborated cross-functionally in an Agile environment to drive the development of the company's new RAG API, where I defined user needs, communicated requirements to developers, tested new features, and implemented code for hyperparameter optimization to ensure alignment, mitigate risks, and support timely delivery.
+- Expanded evaluation datasets of generative AI use cases by leveraging user feedback and applying synthetic methods, enhancing the robustness of the evaluation process.
+- Implemented a 'weighted sum score' by normalizing the scores from judge LLMs using the probabilities of their output tokens, resulting in more reliable evaluations from the judge LLMs.
+- Implemented automated prompt engineering to maximize agreement between judge LLMs and human evaluators, optimizing the prompts for judge LLMs.
+
+Feb. 2023 - Jan. 2024 | EngD Data Science Training Projects | TU/e
+
+- Future State of Customer Due Diligence | Van Lanschot Kempen
+  - Segmented the clients into clusters, enabling within-cluster anomaly detection and risk-based client monitoring.
+
+- Hand Gesture Recognition in Manual Assembly Tasks | Omron
+  - Customized Mediapipe Gesture Recognizer with Mediapipe Model Maker to recognize gestures of interest.
+  - Trained a neural network using hand landmark coordinates obtained from Mediapipe Hand Landmarker to recognize gestures.
+  - Developed a calibration algorithm to change the hue of livestream data so that hand gestures are recognized when hands are covered with gloves.
+
+- Self-organizing Autonomous Aerial Vehicles in Urban Environment | Airbus
+  - Built a simulation environment in Unity game engine for training multiple agents using Reinforcement Learning.
+  - Set up a Multi-Agent Reinforcement Learning training framework (state, action, reward) so that aerial vehicles learn to work together to avoid collision and mitigate noise while going towards their respective target destinations.
+
+- Forecast of Day-Ahead-Market Prices | Essent
+  - Created three multi-output hybrid forecasters for a time-series data.
+
+- Detection of Parking Hotspots Using Sensor Data | Bridgestone Mobility Solutions
+  - Implemented clustering techniques to detect parking hotspots in a city in Europe.
+  - Created a user-friendly dashboard showing how busy a parking spot is for a given time and vehicle type.
+
+Apr. 2019 - Jan. 2023 | Product Change Leader | ASML
+- Led cross-functional change control initiatives, coordinating with diverse stakeholders to ensure traceability, quality, and efficiency in product configuration changes, while driving continuous improvement and facilitating the development of tools and processes to support Configuration Management.
+
+Jan. 2018 - Mar. 2019 | Project Leader | Philips
+- Led end-to-end project planning, execution, and reporting, aligning cross-functional stakeholders to ensure compliance, risk mitigation, resource management, and KPI achievement, while fostering organizational learning and guiding team performance to meet quality, timing, and budgetary goals.
+
+Jan. 2016 - Jan. 2018 | Project Management Engineer | METEKSAN Defence
+- Led the company's largest project by overseeing scope, schedule, and budget changes; coordinating subcontractors and supply chain activities; generating progress and risk reports; and supporting process improvements and SAP PS module as a PMO key user.
+
+Apr. 2015 - Jan. 2016 | Data Analysis and Reporting Engineer | Vestel
+- Developed financial, technical, and operational KPI reports and dashboards for the customer services department, setting new KPIs and communicating insights to senior leadership to enhance data-driven performance management and strategic alignment.
+
+EDUCATION
+
+Feb. 2023 - Jan. 2025 | Engineering Doctorate (EngD) in Data Science | TU/e
+Modules: Data Mining, Modelling and Simulation, Data Engineering, Process Mining, Data Visualization, Analytical Storytelling, System Engineering
+
+2022 | Graduate Certificate in Data Analytics | University College Dublin
+Modules: Advanced Data Analytics, Data Programming with R & Python, Statistical Machine Learning, Predictive Analytics
+
+2013 | MSc Project Management, Finance & Risk | City St George's, University of London
+
+2012 | BSc Mechanical Engineering | METU

@@ -1,0 +1,16 @@
+Dear Hiring Manager,
+
+I am excited to apply for the Data Scientist position at SAM XL. The opportunity to work with real-world sensor data to develop AI-driven solutions for robotic manufacturing processes strongly motivates me. SAM XL's focus on bridging cutting-edge research and industrial application in smart manufacturing aligns closely with my interest in building data-driven systems that improve process quality, reliability, and performance.
+
+I hold a bachelor's degree in mechanical engineering and am familiar with core systems engineering principles, including the V-model. During my studies, I also took courses in non-destructive testing and composite materials, which provided a solid foundation in these areas. While I would revisit these topics to refresh my knowledge, they support my understanding of material behavior and inspection methods. Through my experience in the high-tech and defence industries in the Netherlands and Turkey, I gained hands-on exposure to the full engineering and validation cycle - from requirements definition to testing and operational validation - enabling me to understand how algorithms interact with complex physical systems.
+
+I completed an Engineering Doctorate (EngD) in Data Science last year, where I worked on supervised and unsupervised learning, reinforcement learning, and generative AI across diverse industries. I was responsible for the full lifecycle - from problem formulation to deployment-ready prototypes - developing a strong ability to translate engineering challenges into structured data science solutions. I enjoy turning abstract models into practical, impactful applications.
+
+In two EngD team projects, I developed a hand-gesture recognition system for operator guidance in a manual assembly station and built a simulation environment to train aerial vehicles in collaborative navigation, collision avoidance, and noise mitigation. These experiences reinforced my motivation to work in environments where experimentation, simulation, and real-world validation come together.
+
+My core strengths lie in data analysis and machine learning grounded in strong mathematical and statistical foundations. I am confident in developing robust, scalable AI solutions in Python and integrating them into complex systems. My T-shaped profile - combining technical depth with cross-functional collaboration - enables me to contribute effectively as both a technical expert and team player.
+
+I would be excited to contribute to SAM XL and help advance intelligent, data-driven manufacturing systems.
+
+Kind regards,
+Umur Yesilsoy

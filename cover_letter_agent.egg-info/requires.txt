@@ -1,0 +1,5 @@
+langgraph
+langchain-anthropic
+python-dotenv
+pypdf
+python-docx

@@ -1,0 +1,14 @@
+Dear Hiring Team,
+
+I am excited to apply for the Data Scientist III position at Elsevier. With an Engineering Doctorate (EngD) in Data Science and hands-on experience in GenAI, NLP, and RAG systems, I am motivated to contribute to building high-quality AI solutions that strengthen Elsevier's data enrichment pipelines and product capabilities.
+
+During my graduation project, I contributed to standardizing RAG-based chatbot systems by developing evaluation components within a shared API. I led the design and implementation of evaluation endpoints, enabling consistent and scalable assessment of model outputs. By improving the reliability of LLM-as-a-Judge evaluations - through alignment with human judgment and automated prompt optimization - I helped establish a robust evaluation framework. This experience can support Elsevier in building trustworthy, well-evaluated GenAI and NLP systems for its scientific and healthcare products.
+
+I also worked on fine-tuning multilingual embedding models to improve domain-specific retrieval performance. Using a structured multi-stage training pipeline with semi-hard negative mining and systematic evaluation, I significantly improved retrieval quality and efficiency. This experience can directly benefit Elsevier's RAG and search systems by enhancing document retrieval accuracy across complex scientific datasets.
+
+Through my EngD, I gained experience across the data science lifecycle - from problem formulation to model development and evaluation - working with machine learning and generative AI methods. I have developed strong Python skills and experience collaborating with engineers, which enables me to contribute effectively to production-oriented environments while continuing to grow in deployment practices.
+
+I am particularly inspired by Elsevier's mission to advance science and healthcare. I would welcome the opportunity to contribute my skills in NLP, GenAI, and data science to your team. Thank you for your consideration. I look forward to the opportunity to discuss my application.
+
+Kind regards,
+Umur Yesilsoy

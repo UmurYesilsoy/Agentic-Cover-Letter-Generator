@@ -3,7 +3,9 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError, field_validator, model_validator
 
 from agent import fetch_job_from_url, read_document, run
@@ -17,6 +19,19 @@ def verify_api_key(x_api_key: str = Header()):
 
 
 app = FastAPI()
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Same 422 shape FastAPI's default handler produces, minus each error's `input` and `ctx`
+    fields. `input`: for a model-level check like "provide job_ad or job_ad_url, not both" that
+    has no single field to point at, the default handler dumps the *entire* request body
+    (including cv text) into that field - noisy and pointlessly echoes back what was just sent.
+    `ctx`: embeds the raw ValueError object from the validator, which isn't JSON-serializable
+    once we've dropped out of FastAPI's own default handler (which has a custom encoder for
+    it) - dropping it here isn't optional, unlike `input`, or this handler itself crashes."""
+    errors = [{k: v for k, v in e.items() if k not in ("input", "ctx")} for e in exc.errors()]
+    return JSONResponse(status_code=422, content={"detail": errors})
 
 # word-count floors, not character counts - matches the convention agent.py's
 # fetch_job_from_url already uses (len(text.split()) < 150) to judge a job ad as unusable.
@@ -126,36 +141,36 @@ def generate(request: GenerateRequest = GenerateRequest(), x_api_key: str = Head
 @app.post("/generate/upload")
 def generate_from_upload(
     cv: UploadFile = File(...),
-    job_ad: Optional[UploadFile] = File(None),
+    job_ad: Optional[str] = Form(None),
     job_ad_url: Optional[str] = Form(None),
     past_letters: list[UploadFile] = File(default=[]),
     x_api_key: str = Header(..., alias="X-API-Key"),
 ):
-    """Same pipeline as /generate, but cv/job_ad/past_letters are uploaded files (.txt/.md/.pdf/
-    .docx - whatever agent.read_document() supports) instead of pasted text. job_ad can instead
-    be job_ad_url (not both). Text extracted from each file is validated through the same
-    GenerateRequest checks /generate uses, so a garbled/empty upload is rejected with a 422 the
-    same way a too-short pasted string is."""
+    """Same pipeline as /generate: cv and past_letters are uploaded files (.txt/.md/.pdf/.docx -
+    whatever agent.read_document() supports); job_ad is pasted text or job_ad_url (not both) -
+    never a file, since job postings are normally pasted or linked rather than saved as a
+    document. Text extracted from each file is validated through the same GenerateRequest
+    checks /generate uses, so a garbled/empty upload is rejected with a 422 the same way a
+    too-short pasted string is."""
     verify_api_key(x_api_key)
-    if job_ad is not None and job_ad_url:
-        raise HTTPException(status_code=422,
-                             detail="provide either a job_ad file or job_ad_url, not both")
 
     cv_text = extract_upload_text(cv)
-    job_ad_text = extract_upload_text(job_ad) if job_ad is not None else None
     letter_texts = [extract_upload_text(f) for f in past_letters] or None
 
     try:
-        request = GenerateRequest(cv=cv_text, job_ad=job_ad_text, job_ad_url=job_ad_url,
+        request = GenerateRequest(cv=cv_text, job_ad=job_ad, job_ad_url=job_ad_url,
                                    past_letters=letter_texts)
     except ValidationError as exc:
         # include_context=False - the default errors() embeds the raw ValueError object in
         # each entry's ctx, which isn't JSON-serializable when passed to HTTPException.detail
         # manually like this (FastAPI's own automatic validation handler has a custom encoder
         # for that case; we're bypassing it here since this validation happens after upload
-        # parsing, not during it)
+        # parsing, not during it). include_input=False - same reason as the RequestValidationError
+        # handler above: a model-level check has no single field to blame, so the default would
+        # dump the entire extracted cv/job_ad text back into the response.
         raise HTTPException(status_code=422,
-                             detail=exc.errors(include_url=False, include_context=False))
+                             detail=exc.errors(include_url=False, include_context=False,
+                                                include_input=False))
 
     job_ad_final = resolve_job_ad(request.job_ad, request.job_ad_url)
     return run_pipeline(job_ad_final, request.cv, request.past_letters)

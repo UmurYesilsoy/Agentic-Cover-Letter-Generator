@@ -26,6 +26,7 @@ def root():
     return {
         "status": "ok",
         "service": "cover-letter-agent",
+        "version": "1.0",
     }
 
 

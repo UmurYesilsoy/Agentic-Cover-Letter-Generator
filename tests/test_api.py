@@ -16,6 +16,7 @@ def test_health_endpoint():
     assert response.json() == {
         "status": "ok",
         "service": "cover-letter-agent",
+        "version": "1.0",
     }
 
 

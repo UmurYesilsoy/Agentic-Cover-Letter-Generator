@@ -143,18 +143,24 @@ def generate_from_upload(
     cv: UploadFile = File(...),
     job_ad: Optional[str] = Form(None),
     job_ad_url: Optional[str] = Form(None),
-    past_letters: list[UploadFile] = File(default=[]),
+    past_letter_1: Optional[UploadFile] = File(None),
+    past_letter_2: Optional[UploadFile] = File(None),
+    past_letter_3: Optional[UploadFile] = File(None),
     x_api_key: str = Header(..., alias="X-API-Key"),
 ):
-    """Same pipeline as /generate: cv and past_letters are uploaded files (.txt/.md/.pdf/.docx -
+    """Same pipeline as /generate: cv and past letters are uploaded files (.txt/.md/.pdf/.docx -
     whatever agent.read_document() supports); job_ad is pasted text or job_ad_url (not both) -
     never a file, since job postings are normally pasted or linked rather than saved as a
-    document. Text extracted from each file is validated through the same GenerateRequest
-    checks /generate uses, so a garbled/empty upload is rejected with a 422 the same way a
-    too-short pasted string is."""
+    document. Past letters are three separate optional slots rather than a true file array:
+    Swagger UI doesn't reliably render a "choose file" control for an array-of-files field (it
+    fell back to plain text-array inputs), and qualify() only ever reads the first three of
+    whatever's supplied anyway, so three named slots lose nothing. Text extracted from each file
+    is validated through the same GenerateRequest checks /generate uses, so a garbled/empty
+    upload is rejected with a 422 the same way a too-short pasted string is."""
     verify_api_key(x_api_key)
 
     cv_text = extract_upload_text(cv)
+    past_letters = [f for f in (past_letter_1, past_letter_2, past_letter_3) if f is not None]
     letter_texts = [extract_upload_text(f) for f in past_letters] or None
 
     try:

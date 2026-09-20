@@ -23,7 +23,10 @@ class GenerateRequest(BaseModel):
 
 @app.get("/")
 def root():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "service": "cover-letter-agent",
+    }
 
 
 @app.post("/generate")

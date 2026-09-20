@@ -13,4 +13,17 @@ def test_health_endpoint():
     response = client.get("/")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    assert response.json() == {
+        "status": "ok",
+        "service": "cover-letter-agent",
+    }
+
+
+def test_generate_rejects_wrong_api_key():
+    response = client.post(
+        "/generate",
+        json={},
+        headers={"X-API-Key": "wrong-key"},
+    )
+
+    assert response.status_code == 401

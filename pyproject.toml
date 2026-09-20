@@ -20,3 +20,8 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 py-modules = ["graph"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

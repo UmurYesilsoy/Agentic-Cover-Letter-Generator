@@ -12,3 +12,4 @@ Requires-Dist: pypdf
 Requires-Dist: python-docx
 Requires-Dist: fastapi[standard]
 Requires-Dist: httpx
+Requires-Dist: streamlit

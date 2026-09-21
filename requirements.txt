@@ -1,0 +1,8 @@
+# For streamlit_app.py only - the deployment target for this file is Streamlit Community Cloud,
+# which doesn't reliably install from pyproject.toml (see docs.streamlit.io/deploy/streamlit-
+# community-cloud/deploy-your-app/app-dependencies) and prioritizes requirements.txt instead.
+#
+# streamlit_app.py never imports agent.py/api.py - it only calls the already-deployed Render API
+# over HTTP - so it doesn't need langgraph/langchain-anthropic/etc., just these two.
+streamlit==1.64.0
+httpx==0.28.1

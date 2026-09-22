@@ -44,13 +44,15 @@ def check_password() -> bool:
     return False
 
 
-def call_generate(cv_file, job_ad_text, job_ad_url, letter_files) -> dict:
-    """POST to /generate/upload - see api.py for the actual contract this mirrors."""
+def call_generate(cv_file, job_ad_text, job_ad_url, letter_files, human_in_the_loop) -> dict:
+    """POST to /generate/upload - see api.py for the actual contract this mirrors. Returns either
+    {"final_letter": ...} (human_in_the_loop was off) or {"status": "pending_review"|"completed",
+    "thread_id": ..., ...} (it was on) - main() branches on which shape came back."""
     files = {"cv": (cv_file.name, cv_file.getvalue())}
     for i, letter in enumerate(letter_files[:MAX_PAST_LETTERS], start=1):
         files[f"past_letter_{i}"] = (letter.name, letter.getvalue())
 
-    data = {}
+    data = {"human_in_the_loop": str(human_in_the_loop).lower()}
     if job_ad_text:
         data["job_ad"] = job_ad_text
     if job_ad_url:
@@ -63,10 +65,103 @@ def call_generate(cv_file, job_ad_text, job_ad_url, letter_files) -> dict:
     return response.json()
 
 
-def main():
-    if not check_password():
-        return
+def call_resume(thread_id, action, letter=None, notes=None) -> dict:
+    """POST to /generate/resume - continues a thread call_generate left "pending_review"."""
+    body = {"thread_id": thread_id, "action": action}
+    if letter is not None:
+        body["letter"] = letter
+    if notes:
+        body["notes"] = notes
 
+    headers = {"X-API-Key": st.secrets["APP_API_KEY"]}
+    response = httpx.post(f"{API_BASE_URL}/generate/resume", json=body,
+                           headers=headers, timeout=REQUEST_TIMEOUT)
+    response.raise_for_status()
+    return response.json()
+
+
+def render_result(result: dict) -> None:
+    st.success("Done!")
+    st.markdown(result["final_letter"])
+    if result.get("changes"):
+        with st.expander("What was changed while assembling the letter"):
+            for change in result["changes"]:
+                st.write(f"- {change}")
+    if st.button("Start a new letter"):
+        st.session_state.pop("final_result", None)
+        st.rerun()
+
+
+def request_error(exc: Exception) -> str:
+    if isinstance(exc, httpx.HTTPStatusError):
+        try:
+            return exc.response.json().get("detail", exc.response.text)
+        except Exception:
+            return exc.response.text
+    return str(exc)
+
+
+def resume_and_store(thread_id: str, action: str, **kwargs) -> None:
+    """Send a review decision, then stash whatever comes back for the next rerun - another
+    pending_review (a further revise) or a final_result (approve/edit)."""
+    with st.spinner("Working..."):
+        try:
+            result = call_resume(thread_id, action, **kwargs)
+        except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+            st.error(f"Couldn't send your decision: {request_error(exc)}")
+            return
+
+    st.session_state.pop("pending_review", None)
+    if result.get("status") == "pending_review":
+        st.session_state["pending_review"] = {"thread_id": result["thread_id"], **result["review"]}
+    else:
+        st.session_state["final_result"] = result
+    st.rerun()
+
+
+def render_review() -> None:
+    """The human_review gate, surfaced client-side: the letter plus the evaluator's score and
+    issues, with three ways to respond - mirrors the notebook's own stdin-driven version of this
+    same interrupt() payload (see cover_letter_v2.ipynb, "Run it")."""
+    review = st.session_state["pending_review"]
+    thread_id = review["thread_id"]
+
+    st.title("Review your letter")
+    st.caption(f"Evaluator score: {review.get('score')}/5")
+    if review.get("issues"):
+        with st.expander("Issues the evaluator flagged", expanded=True):
+            for issue in review["issues"]:
+                st.write(f"- {issue}")
+    if review.get("unsupported_claims"):
+        with st.expander("Claims that aren't grounded in your CV or past letters"):
+            for claim in review["unsupported_claims"]:
+                st.write(f"- {claim}")
+
+    st.markdown(review.get("letter", ""))
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if st.button("Approve", type="primary"):
+            resume_and_store(thread_id, "approve")
+
+    with col2:
+        with st.popover("Ask for another revision"):
+            notes = st.text_area("Notes for the reviser (optional)", key="revise_notes")
+            if st.button("Send for revision"):
+                resume_and_store(thread_id, "revise", notes=notes or None)
+
+    with col3:
+        with st.popover("Edit directly"):
+            edited = st.text_area("Replacement letter", value=review.get("letter", ""),
+                                   height=300, key="edit_letter")
+            if st.button("Save edited letter"):
+                if not edited.strip():
+                    st.error("The letter can't be empty.")
+                else:
+                    resume_and_store(thread_id, "edit", letter=edited)
+
+
+def render_generate_form() -> None:
     st.title("Cover Letter Agent")
     st.caption("Upload your CV, tell us about the role, and get a tailored cover letter.")
 
@@ -86,6 +181,11 @@ def main():
     if len(letter_files) > MAX_PAST_LETTERS:
         st.warning(f"Only the first {MAX_PAST_LETTERS} will be used.")
 
+    human_in_the_loop = st.checkbox(
+        "Review before finalizing",
+        help="Pause once a letter is ready so you can approve it, edit it directly, or ask for "
+             "another revision pass, instead of getting the automatic result right away.")
+
     if st.button("Generate my cover letter", type="primary"):
         if cv_file is None:
             st.error("Please upload your CV.")
@@ -97,25 +197,31 @@ def main():
         with st.spinner("Generating your cover letter - this takes a few minutes "
                          "(the server may also need a minute to wake up first)..."):
             try:
-                result = call_generate(cv_file, job_ad_text, job_ad_url, letter_files)
-            except httpx.HTTPStatusError as exc:
-                try:
-                    detail = exc.response.json().get("detail", exc.response.text)
-                except Exception:
-                    detail = exc.response.text
-                st.error(f"Couldn't generate a letter: {detail}")
-                return
-            except httpx.RequestError as exc:
-                st.error(f"Couldn't reach the server: {exc}")
+                result = call_generate(cv_file, job_ad_text, job_ad_url, letter_files,
+                                        human_in_the_loop)
+            except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+                st.error(f"Couldn't generate a letter: {request_error(exc)}")
                 return
 
-        st.success("Done!")
-        st.markdown(result["final_letter"])
+        if result.get("status") == "pending_review":
+            st.session_state["pending_review"] = {"thread_id": result["thread_id"], **result["review"]}
+        else:
+            st.session_state["final_result"] = result
+        st.rerun()
 
-        if result.get("changes"):
-            with st.expander("What was changed while assembling the letter"):
-                for change in result["changes"]:
-                    st.write(f"- {change}")
+
+def main():
+    if not check_password():
+        return
+
+    # a paused review or a finished result takes over the whole page until it's resolved, so the
+    # generation form and the review/result views never end up rendered at the same time
+    if st.session_state.get("pending_review"):
+        render_review()
+    elif st.session_state.get("final_result"):
+        render_result(st.session_state["final_result"])
+    else:
+        render_generate_form()
 
 
 main()

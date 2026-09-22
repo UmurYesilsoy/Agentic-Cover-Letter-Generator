@@ -9,6 +9,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError, field_validator, model_validator
 
 from agent import fetch_job_from_url, read_document, run
+from agent import resume as agent_resume
+from agent import start as agent_start
 
 APP_API_KEY = os.environ["APP_API_KEY"]
 
@@ -47,6 +49,10 @@ class GenerateRequest(BaseModel):
     job_ad_url: Optional[str] = None
     cv: Optional[str] = None
     past_letters: Optional[list[str]] = None
+    # off by default - when true, the run stops at agent.py's human_review gate instead of
+    # returning a finished letter, and the caller finishes it via POST /generate/resume. Existing
+    # callers that never set this keep getting today's single-call, always-finished response.
+    human_in_the_loop: bool = False
 
     @field_validator("job_ad")
     @classmethod
@@ -96,12 +102,15 @@ def resolve_job_ad(job_ad: Optional[str], job_ad_url: Optional[str]) -> Optional
     return text
 
 
-def run_pipeline(job_ad: Optional[str], cv: Optional[str],
-                  past_letters: Optional[list[str]]) -> dict:
+def run_pipeline(job_ad: Optional[str], cv: Optional[str], past_letters: Optional[list[str]],
+                  human_in_the_loop: bool = False) -> dict:
     payload = {k: v for k, v in
                {"job_ad": job_ad, "cv": cv, "past_letters": past_letters}.items()
                if v is not None}
-    return run(payload)
+    if not human_in_the_loop:
+        return run(payload)                    # unchanged: always finishes in this one call
+    payload["human_in_the_loop"] = True
+    return agent_start(payload)                 # may come back "pending_review" instead
 
 
 def extract_upload_text(upload: UploadFile) -> str:
@@ -135,7 +144,7 @@ def generate(request: GenerateRequest = GenerateRequest(), x_api_key: str = Head
     multi-minute, blocking call in its threadpool instead of on the event loop."""
     verify_api_key(x_api_key)
     job_ad = resolve_job_ad(request.job_ad, request.job_ad_url)
-    return run_pipeline(job_ad, request.cv, request.past_letters)
+    return run_pipeline(job_ad, request.cv, request.past_letters, request.human_in_the_loop)
 
 
 @app.post("/generate/upload")
@@ -146,6 +155,7 @@ def generate_from_upload(
     past_letter_1: Optional[UploadFile] = File(None),
     past_letter_2: Optional[UploadFile] = File(None),
     past_letter_3: Optional[UploadFile] = File(None),
+    human_in_the_loop: bool = Form(False),
     x_api_key: str = Header(..., alias="X-API-Key"),
 ):
     """Same pipeline as /generate: cv and past letters are uploaded files (.txt/.md/.pdf/.docx -
@@ -165,7 +175,7 @@ def generate_from_upload(
 
     try:
         request = GenerateRequest(cv=cv_text, job_ad=job_ad, job_ad_url=job_ad_url,
-                                   past_letters=letter_texts)
+                                   past_letters=letter_texts, human_in_the_loop=human_in_the_loop)
     except ValidationError as exc:
         # include_context=False - the default errors() embeds the raw ValueError object in
         # each entry's ctx, which isn't JSON-serializable when passed to HTTPException.detail
@@ -179,4 +189,38 @@ def generate_from_upload(
                                                 include_input=False))
 
     job_ad_final = resolve_job_ad(request.job_ad, request.job_ad_url)
-    return run_pipeline(job_ad_final, request.cv, request.past_letters)
+    return run_pipeline(job_ad_final, request.cv, request.past_letters, request.human_in_the_loop)
+
+
+class ResumeRequest(BaseModel):
+    thread_id: str
+    action: str                     # "approve" | "edit" | "revise"
+    letter: Optional[str] = None    # required when action == "edit"
+    notes: Optional[str] = None     # optional, used when action == "revise"
+
+    @model_validator(mode="after")
+    def valid_decision(self):
+        if self.action not in {"approve", "edit", "revise"}:
+            raise ValueError("action must be 'approve', 'edit' or 'revise'")
+        if self.action == "edit" and not (self.letter and self.letter.strip()):
+            raise ValueError("action 'edit' requires a non-empty 'letter'")
+        return self
+
+
+@app.post("/generate/resume")
+def generate_resume(request: ResumeRequest, x_api_key: str = Header(..., alias="X-API-Key")):
+    """Resume a thread that /generate or /generate/upload left "pending_review" (human_in_the_loop
+    was true and the run reached agent.py's human_review gate). Same response shape as the start
+    call: either "completed", or "pending_review" again if the decision was itself 'revise' -
+    revise() re-runs evaluate() afterwards, which always lands back on human_review."""
+    verify_api_key(x_api_key)
+    decision = {"action": request.action}
+    if request.action == "edit":
+        decision["letter"] = request.letter
+    elif request.action == "revise" and request.notes:
+        decision["notes"] = request.notes
+
+    try:
+        return agent_resume(request.thread_id, decision)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))

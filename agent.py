@@ -17,6 +17,7 @@ import html
 import inspect
 import json
 import re
+import uuid
 from dataclasses import dataclass, asdict
 from datetime import date
 from pathlib import Path
@@ -35,7 +36,9 @@ from pydantic import BaseModel, Field
 
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command, interrupt
 
 import os
 assert os.environ.get("ANTHROPIC_API_KEY"), f"Put ANTHROPIC_API_KEY in {BASE_DIR / '.env'}"
@@ -62,6 +65,10 @@ class Config:
 
     web_search_max_uses: int = 6
     dump_prompts: bool = True   # write every rendered prompt to outputs/.prompts/
+
+    # evaluate/revise loop: a score at or above this passes; below it triggers exactly one
+    # revise pass (bounded by State's revision_count, not by this) before returning regardless
+    eval_score_threshold: int = 4
 
     # anchored to this file's directory, not the caller's cwd, so a notebook importing this
     # module from anywhere still reads/writes the same inputs/outputs as the notebook version
@@ -190,6 +197,31 @@ class Assembled(BaseModel):
                                            "human reviewing the output")
 
 
+class LetterEvaluation(BaseModel):
+    grounded: bool = Field(description="every claim about the candidate is supported by the CV "
+                                       "or the candidate's past cover letters")
+    unsupported_claims: list[str] = Field(description="claims that aren't grounded, quoted")
+    specific: bool = Field(description="clearly about this role and company - if you could swap "
+                                       "in a competitor's name and it would still read sensibly, "
+                                       "this fails")
+    coherent: bool = Field(description="the three paragraphs don't repeat the same hook, fact or "
+                                       "phrase - they were written independently of each other "
+                                       "and may have converged on the same point")
+    flows_well: bool = Field(description="no sudden topic changes - each paragraph and each "
+                                         "sentence follows naturally from what came before, "
+                                         "rather than reading as unconnected blocks")
+    issues: list[str] = Field(description="concrete problems to fix, specific enough that "
+                                          "someone revising the letter would know exactly what "
+                                          "to change")
+    overall_score: int = Field(ge=1, le=5, description="1 = needs major rework, 5 = no changes "
+                                                        "needed")
+
+
+class RevisedLetter(BaseModel):
+    letter: str = Field(description="the corrected cover letter")
+    changes: list[str] = Field(description="what was changed and why")
+
+
 class State(TypedDict, total=False):
     job_ad: str
     cv: str
@@ -210,6 +242,23 @@ class State(TypedDict, total=False):
 
     final_letter: str
     changes: list
+
+    evaluation_issues: list
+    evaluation_unsupported_claims: list
+    evaluation_score: int
+    revision_count: int
+
+    # set by the caller, not by any node - human_review only pauses on interrupt() when this is
+    # true. The notebook's interactive run sets it; api.py's run_pipeline() doesn't, so the
+    # deployed API keeps auto-approving here and its single-request-response contract is unchanged
+    human_in_the_loop: bool
+    human_action: str
+
+    # not otherwise exposed (every other node reads job_ad directly rather than a pre-extracted
+    # copy - see research()/para_intro()/etc.) - kept here only so revise() can re-save the
+    # letter under the same filename assemble() already picked, without a second extraction call
+    company: str
+    role: str
 
 
 def log_prompt(system: str, user: str, node: str = None) -> None:
@@ -559,6 +608,16 @@ report a short list of what you changed and why."""
 PLACEHOLDER_RE = re.compile(r"(\[[A-Za-z][^\]]{0,40}\]|\{\{.*?\}\}|\bTODO\b|\bXXXX?\b)")
 
 
+def save_letter(company: str, role: str, letter: str) -> Path:
+    """Shared by assemble() and revise() - revise() overwrites the same file assemble() already
+    wrote, under the same name, since a revision doesn't change the company/role it's filed
+    under."""
+    slug = re.sub(r"[^a-z0-9]+", "-", f"{company}-{role}".lower()).strip("-")[:60]
+    path = cfg.outputs_dir / f"{date.today().isoformat()}_{slug}_v2.md"
+    path.write_text(letter, encoding="utf-8")
+    return path
+
+
 def assemble(state: State) -> dict:
     letter = f"{state['para_intro']}\n\n{state['para_body']}\n\n{state['para_close']}".strip()
     letter = re.sub(r"\n{3,}", "\n\n", letter)
@@ -595,12 +654,134 @@ def assemble(state: State) -> dict:
     for change in revised.changes:
         print(f"    - {change}")
 
-    slug = re.sub(r"[^a-z0-9]+", "-", f"{revised.company}-{revised.role}".lower()).strip("-")[:60]
-    path = cfg.outputs_dir / f"{date.today().isoformat()}_{slug}_v2.md"
-    path.write_text(revised.letter, encoding="utf-8")
+    path = save_letter(revised.company, revised.role, revised.letter)
     print(f"[assemble] -> {path}")
 
-    return {"final_letter": revised.letter, "changes": revised.changes}
+    return {"final_letter": revised.letter, "changes": revised.changes,
+            "company": revised.company, "role": revised.role}
+
+
+# ---------------------------------------------------------------------------
+# Nodes: evaluate / revise
+# ---------------------------------------------------------------------------
+
+EVALUATE_SYSTEM = """Judge a finished cover letter against the candidate's CV and their past
+cover letters (both are background material the letter's claims should be traceable to - a claim
+grounded in a past letter is as valid as one grounded in the CV) and against the job
+advertisement.
+
+Check:
+- `grounded`: every claim about the candidate is supported by the CV or the past letters. List
+  anything that isn't in `unsupported_claims`, quoted.
+- `specific`: the letter is clearly about this role and company - if you could swap in a
+  competitor's name and it would still read sensibly, it fails this check.
+- `coherent`: the three paragraphs don't repeat the same hook, fact or phrase - they were written
+  independently of each other and may have converged on the same opening move or point.
+- `flows_well`: no sudden topic changes - each paragraph, and each sentence within it, should
+  follow naturally from what came before. A letter that reads as three unconnected blocks stapled
+  together fails this even if each block is individually fine.
+
+List concrete problems in `issues` - specific enough that someone fixing the letter would know
+exactly what to change. Score `overall_score` 1-5, where 5 means no changes needed."""
+
+
+def evaluate(state: State) -> dict:
+    letters = "\n\n--- past letter ---\n\n".join(state.get("letters_clean", [])) or "(none supplied)"
+    result = ask(LetterEvaluation, EVALUATE_SYSTEM,
+                 f"JOB ADVERTISEMENT:\n{state['job_ad']}\n\n"
+                 f"CV:\n{state['cv_clean']}\n\n"
+                 f"CANDIDATE'S PAST COVER LETTERS:\n{letters}\n\n"
+                 f"LETTER TO JUDGE:\n---\n{state['final_letter']}\n---")
+
+    print(f"[evaluate] score {result.overall_score}/5 - grounded={result.grounded} "
+          f"specific={result.specific} coherent={result.coherent} flows_well={result.flows_well}")
+    for issue in result.issues:
+        print(f"    - {issue}")
+
+    return {"evaluation_issues": result.issues,
+            "evaluation_unsupported_claims": result.unsupported_claims,
+            "evaluation_score": result.overall_score}
+
+
+REVISE_LOOP_SYSTEM = """You are given a cover letter, an evaluator's findings about it, the
+candidate's CV and past cover letters for grounding, and the job advertisement.
+
+Fix exactly what the evaluator flagged - the unsupported claims and the listed issues. Do not
+invent new claims, facts, metrics or responsibilities. You may lightly edit wording where that's
+needed for flow or coherence, but leave everything else as it is.
+
+Report a short list of what you changed and why."""
+
+
+def revise(state: State) -> dict:
+    letters = "\n\n--- past letter ---\n\n".join(state.get("letters_clean", [])) or "(none supplied)"
+    findings = [f"UNSUPPORTED: {c}" for c in state.get("evaluation_unsupported_claims", [])] \
+        + list(state.get("evaluation_issues", []))
+
+    result = ask(RevisedLetter, REVISE_LOOP_SYSTEM,
+                 f"JOB ADVERTISEMENT:\n{state['job_ad']}\n\n"
+                 f"CV:\n{state['cv_clean']}\n\n"
+                 f"CANDIDATE'S PAST COVER LETTERS:\n{letters}\n\n"
+                 f"EVALUATOR'S FINDINGS:\n" + ("\n".join(f"- {f}" for f in findings) or "(none)") + "\n\n"
+                 f"LETTER:\n---\n{state['final_letter']}\n---")
+
+    print(f"[revise] -> {len(result.letter.split())} words")
+    for change in result.changes:
+        print(f"    - {change}")
+
+    path = save_letter(state["company"], state["role"], result.letter)
+    print(f"[revise] -> {path}")
+
+    return {"final_letter": result.letter,
+            "changes": state.get("changes", []) + result.changes,
+            "revision_count": state.get("revision_count", 0) + 1}
+
+
+def route_after_evaluate(state: State) -> str:
+    """One AUTOMATIC revise pass at most - the same 'one corrective pass, not a loop' rule
+    assemble() already follows, so this can't become the two-gates-arguing failure mode the V1
+    experiment hit. Once the score passes or that one pass is spent, control goes to
+    human_review rather than straight to END - a human gets final say instead of just the
+    threshold, and can still request further revisions themselves from there."""
+    if state.get("evaluation_score", 5) >= cfg.eval_score_threshold or state.get("revision_count", 0) >= 1:
+        return "human_review"
+    return "revise"
+
+
+def human_review(state: State) -> dict:
+    """Pauses for a human decision on the finished letter via interrupt() - only when the caller
+    set human_in_the_loop (see State). Resume with Command(resume=...) where the payload is
+    {"action": "approve"} | {"action": "edit", "letter": "..."} | {"action": "revise", "notes":
+    "..." (optional)}. A human-requested revise isn't bounded the way the automatic one is: it
+    routes to revise() same as the automatic pass, which loops back to evaluate() and then here
+    again - by then revision_count is >= 1, so route_after_evaluate always lands back on
+    human_review rather than auto-revising a second time."""
+    if not state.get("human_in_the_loop"):
+        return {"human_action": "approve"}
+
+    print("[human_review] waiting for a decision...")
+    decision = interrupt({
+        "letter": state["final_letter"],
+        "score": state.get("evaluation_score"),
+        "issues": state.get("evaluation_issues", []),
+        "unsupported_claims": state.get("evaluation_unsupported_claims", []),
+    }) or {}
+
+    action = decision.get("action", "approve")
+    print(f"[human_review] -> {action}")
+
+    if action == "edit":
+        return {"final_letter": decision["letter"], "human_action": "edit"}
+    if action == "revise":
+        issues = list(state.get("evaluation_issues", []))
+        if decision.get("notes"):
+            issues = issues + [f"HUMAN NOTE: {decision['notes']}"]
+        return {"evaluation_issues": issues, "human_action": "revise"}
+    return {"human_action": "approve"}
+
+
+def route_after_human_review(state: State) -> str:
+    return "revise" if state.get("human_action") == "revise" else END
 
 
 # ---------------------------------------------------------------------------
@@ -619,7 +800,8 @@ builder = StateGraph(State)
 
 for name, fn in [("load", load), ("prepare", prepare), ("research", research),
                  ("para_intro", para_intro), ("qualify", qualify), ("para_body", para_body),
-                 ("para_close", para_close), ("assemble", assemble)]:
+                 ("para_close", para_close), ("assemble", assemble),
+                 ("evaluate", evaluate), ("revise", revise), ("human_review", human_review)]:
     builder.add_node(name, fn)
 
 builder.add_edge(START, "load")
@@ -640,31 +822,114 @@ builder.add_edge("prepare", "para_close")
 # under the hood (assemble becomes eligible as soon as any one finishes), which races para_body
 builder.add_edge(["para_intro", "para_body", "para_close"], "assemble")
 
-builder.add_edge("assemble", END)
+builder.add_edge("assemble", "evaluate")
+builder.add_conditional_edges("evaluate", route_after_evaluate,
+                               {"revise": "revise", "human_review": "human_review"})
+builder.add_edge("revise", "evaluate")
+builder.add_conditional_edges("human_review", route_after_human_review, {"revise": "revise", END: END})
 
-graph = builder.compile()
+# a checkpointer is required for human_review's interrupt()/Command(resume=...) to work at all -
+# InMemorySaver is fine here since a thread only needs to survive one process's lifetime (the
+# notebook kernel, or one `langgraph dev` server run); nothing here needs it to outlive that
+graph = builder.compile(checkpointer=InMemorySaver())
 
 
 # ---------------------------------------------------------------------------
 # Calling the graph
 # ---------------------------------------------------------------------------
 
+def _prompt_human_review(payload: dict) -> dict:
+    """Render human_review's interrupt payload and collect a decision from stdin - the
+    notebook's synchronous equivalent of resuming a paused thread in the Studio UI."""
+    print("\n" + "=" * 70)
+    print(f"HUMAN REVIEW - score {payload.get('score')}/5")
+    for issue in payload.get("issues", []):
+        print(f"  issue: {issue}")
+    for claim in payload.get("unsupported_claims", []):
+        print(f"  unsupported: {claim}")
+    print("-" * 70)
+    print(payload.get("letter", ""))
+    print("-" * 70)
+
+    action = input("approve / edit / revise? [approve] ").strip().lower() or "approve"
+    if action == "edit":
+        print("Paste the replacement letter, then an empty line to finish:")
+        lines = []
+        while (line := input()) != "":
+            lines.append(line)
+        return {"action": "edit", "letter": "\n".join(lines)}
+    if action == "revise":
+        notes = input("Notes for the reviser (optional): ").strip()
+        return {"action": "revise", "notes": notes} if notes else {"action": "revise"}
+    return {"action": "approve"}
+
+
+def _invoke_in_process(payload: dict, config: dict) -> dict:
+    """graph.invoke(), resuming past any human_review interrupt with a stdin prompt. Only
+    payloads with human_in_the_loop=True ever actually pause - a plain run just runs straight
+    through, same as before this was added."""
+    result = graph.invoke(payload, config)
+    while "__interrupt__" in result:
+        decision = _prompt_human_review(result["__interrupt__"][0].value)
+        result = graph.invoke(Command(resume=decision), config)
+    return result
+
+
 def run(payload: dict, studio_url: str = "http://127.0.0.1:2024") -> dict:
     """Invoke the graph, routing through a running `langgraph dev` server (so the run shows up
     as a thread in Studio) when one is reachable, falling back to an in-process `graph.invoke`
-    otherwise."""
+    otherwise. Every call gets its own thread_id - required by the checkpointer even for runs
+    that never hit human_review's interrupt().
+
+    If payload sets human_in_the_loop=True and this goes through Studio, the pause is Studio's
+    own built-in interrupt UI - resume the thread there, not from this function. The in-process
+    fallback instead resumes via stdin prompts (see _invoke_in_process)."""
+    config = {"recursion_limit": 30, "configurable": {"thread_id": str(uuid.uuid4())}}
+
     try:
         from langgraph_sdk import get_sync_client
     except ImportError:
-        return graph.invoke(payload, {"recursion_limit": 30})
+        return _invoke_in_process(payload, config)
 
     client = get_sync_client(url=studio_url)
     try:
         thread = client.threads.create(graph_id="cover_letter")
     except Exception as exc:
         print(f"[agent] dev server not reachable ({type(exc).__name__}); running in-process")
-        return graph.invoke(payload, {"recursion_limit": 30})
+        return _invoke_in_process(payload, config)
 
     print(f"[agent] thread {thread['thread_id']} - open Studio to watch it run")
     return client.runs.wait(thread["thread_id"], "cover_letter",
                              input=payload, config={"recursion_limit": 30})
+
+
+def _shape(thread_id: str, result: dict) -> dict:
+    if "__interrupt__" in result:
+        return {"status": "pending_review", "thread_id": thread_id,
+                "review": result["__interrupt__"][0].value}
+    return {"status": "completed", "thread_id": thread_id,
+            **{k: result[k] for k in ("final_letter", "changes", "company", "role") if k in result}}
+
+
+def start(payload: dict) -> dict:
+    """Start a fresh thread, running until completion or the first human_review interrupt (only
+    reachable when payload sets human_in_the_loop=True - see State). For a programmatic caller
+    (api.py) that drives the review itself via resume() below, rather than the stdin-prompt loop
+    run()/_invoke_in_process use for interactive/local use. Always a plain in-process invoke - no
+    Studio routing, since a deployed server has no Studio to route to."""
+    thread_id = str(uuid.uuid4())
+    config = {"recursion_limit": 30, "configurable": {"thread_id": thread_id}}
+    result = graph.invoke(payload, config)
+    return _shape(thread_id, result)
+
+
+def resume(thread_id: str, decision: dict) -> dict:
+    """Resume a thread paused at human_review with a decision - see human_review's docstring for
+    the decision shape. Raises ValueError (api.py maps this to a 404) if the thread doesn't
+    exist or isn't currently paused - both look identical to LangGraph (get_state().next is
+    empty either way), which is what's checked here."""
+    config = {"recursion_limit": 30, "configurable": {"thread_id": thread_id}}
+    if not graph.get_state(config).next:
+        raise ValueError(f"thread {thread_id!r} has nothing pending to resume")
+    result = graph.invoke(Command(resume=decision), config)
+    return _shape(thread_id, result)

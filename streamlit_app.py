@@ -69,11 +69,15 @@ def call_generate(cv_file, job_ad_text, job_ad_url, letter_files, select_reasons
     return response.json()
 
 
-def call_resume(thread_id: str, **decision) -> dict:
-    """POST to /generate/resume - continues a thread call_generate left "pending_review". The
-    decision's shape depends on which gate is being resumed - action/letter/notes for
-    human_review, selected/custom for select_reasons (see api.py's ResumeRequest)."""
+def call_resume(thread_id: str, interrupt_id: str = None, **decision) -> dict:
+    """POST to /generate/resume - continues one pending gate of a thread call_generate left
+    "pending_review". The decision's shape depends on which gate is being resumed -
+    action/letter/notes for human_review, selected/custom(_qualifications) for the other two (see
+    api.py's ResumeRequest). `interrupt_id` is only required when more than one gate was pending
+    at once - see render_review()."""
     body = {"thread_id": thread_id, **decision}
+    if interrupt_id:
+        body["interrupt_id"] = interrupt_id
     headers = {"X-API-Key": st.secrets["APP_API_KEY"]}
     response = httpx.post(f"{API_BASE_URL}/generate/resume", json=body,
                            headers=headers, timeout=REQUEST_TIMEOUT)
@@ -102,57 +106,58 @@ def request_error(exc: Exception) -> str:
     return str(exc)
 
 
-def resume_and_store(thread_id: str, **decision) -> None:
-    """Send a review decision, then stash whatever comes back for the next rerun - another
-    pending_review (the next gate, or a further revise) or a final_result (approve/edit)."""
+def resume_and_store(thread_id: str, interrupt_id: str = None, **decision) -> None:
+    """Send a review decision for one gate, then replace pending_reviews with whatever the server
+    says is still pending - could be empty (falls through to final_result), the same list minus
+    the one just answered, or with a newly-reached gate added (e.g. human_review, once
+    select_reasons/select_qualifications are both done)."""
     with st.spinner("Working..."):
         try:
-            result = call_resume(thread_id, **decision)
+            result = call_resume(thread_id, interrupt_id, **decision)
         except (httpx.HTTPStatusError, httpx.RequestError) as exc:
             st.error(f"Couldn't send your decision: {request_error(exc)}")
             return
 
-    st.session_state.pop("pending_review", None)
+    st.session_state.pop("pending_reviews", None)
     if result.get("status") == "pending_review":
-        st.session_state["pending_review"] = {"thread_id": result["thread_id"], **result["review"]}
+        st.session_state["pending_reviews"] = [
+            {"thread_id": result["thread_id"], **r} for r in result["reviews"]]
     else:
         st.session_state["final_result"] = result
     st.rerun()
 
 
-def render_select_reasons() -> None:
+def render_select_reasons(review: dict) -> None:
     """The select_reasons gate, surfaced client-side: pick up to 3 of research()'s candidate
     reasons for the opening paragraph to build on, and optionally add your own."""
-    review = st.session_state["pending_review"]
-    thread_id = review["thread_id"]
+    thread_id, interrupt_id = review["thread_id"], review["interrupt_id"]
     reasons = review.get("reasons", [])
 
     st.title("Why do you want this role?")
     st.caption("Pick up to 3 reasons for the opening paragraph to build on, or write your own.")
 
     selected_labels = st.multiselect("Candidate reasons (from research)", options=reasons,
-                                      max_selections=3, key="reason_choices")
+                                      max_selections=3, key=f"reason_choices_{interrupt_id}")
     custom_text = st.text_area("Add your own reasons (optional, one per line)",
-                                key="custom_reasons")
+                                key=f"custom_reasons_{interrupt_id}")
 
-    if st.button("Continue", type="primary"):
+    if st.button("Continue", type="primary", key=f"reasons_continue_{interrupt_id}"):
         selected = [reasons.index(label) for label in selected_labels]
         custom = [line.strip() for line in custom_text.splitlines() if line.strip()]
         if not selected and not custom:
             st.error("Pick at least one reason, or write your own.")
         else:
-            resume_and_store(thread_id, selected=selected, custom=custom)
+            resume_and_store(thread_id, interrupt_id, selected=selected, custom=custom)
 
 
-def render_select_qualifications() -> None:
+def render_select_qualifications(review: dict) -> None:
     """The select_qualifications gate, surfaced client-side: pick freely from qualify()'s ranked
     list for the body paragraph to build on (no cap - para_body's own prompt already says to
     build on two or three properly rather than listing everything), and optionally add one of
     your own (qualification + what it's worth to the team - no evidence field, since that's
     meant to point at something in the CV; evaluate()'s grounded check is the safety net if a
     custom entry turns out unsupported)."""
-    review = st.session_state["pending_review"]
-    thread_id = review["thread_id"]
+    thread_id, interrupt_id = review["thread_id"], review["interrupt_id"]
     quals = review.get("qualifications", [])
 
     st.title("Which qualifications should the letter lead with?")
@@ -167,14 +172,14 @@ def render_select_qualifications() -> None:
 
     labels = [f"[{q['relevance']}/5] {q['qualification']}" for q in quals]
     chosen_labels = st.multiselect("Qualifications (from your CV)", options=labels,
-                                    key="qual_choices")
+                                    key=f"qual_choices_{interrupt_id}")
 
     with st.expander("Add a qualification of your own (optional)"):
-        custom_qual = st.text_input("Qualification", key="custom_qual_title")
+        custom_qual = st.text_input("Qualification", key=f"custom_qual_title_{interrupt_id}")
         custom_value = st.text_area("What would this be worth to this team?",
-                                     key="custom_qual_value")
+                                     key=f"custom_qual_value_{interrupt_id}")
 
-    if st.button("Continue", type="primary"):
+    if st.button("Continue", type="primary", key=f"quals_continue_{interrupt_id}"):
         selected = [i for i, label in enumerate(labels) if label in chosen_labels]
         custom_qualifications = []
         if custom_qual.strip() and custom_value.strip():
@@ -183,16 +188,15 @@ def render_select_qualifications() -> None:
         if not selected and not custom_qualifications:
             st.error("Pick at least one qualification, or add your own.")
         else:
-            resume_and_store(thread_id, selected=selected,
+            resume_and_store(thread_id, interrupt_id, selected=selected,
                               custom_qualifications=custom_qualifications)
 
 
-def render_human_review() -> None:
+def render_human_review(review: dict) -> None:
     """The human_review gate, surfaced client-side: the letter plus the evaluator's score and
     issues, with three ways to respond - mirrors the notebook's own stdin-driven version of this
     same interrupt() payload (see cover_letter_v2.ipynb, "Run it")."""
-    review = st.session_state["pending_review"]
-    thread_id = review["thread_id"]
+    thread_id, interrupt_id = review["thread_id"], review["interrupt_id"]
 
     st.title("Review your letter")
     st.caption(f"Evaluator score: {review.get('score')}/5")
@@ -209,35 +213,43 @@ def render_human_review() -> None:
 
     col1, col2, col3 = st.columns(3)
     with col1:
-        if st.button("Approve", type="primary"):
-            resume_and_store(thread_id, action="approve")
+        if st.button("Approve", type="primary", key=f"approve_{interrupt_id}"):
+            resume_and_store(thread_id, interrupt_id, action="approve")
 
     with col2:
         with st.popover("Ask for another revision"):
-            notes = st.text_area("Notes for the reviser (optional)", key="revise_notes")
-            if st.button("Send for revision"):
-                resume_and_store(thread_id, action="revise", notes=notes or None)
+            notes = st.text_area("Notes for the reviser (optional)",
+                                  key=f"revise_notes_{interrupt_id}")
+            if st.button("Send for revision", key=f"revise_{interrupt_id}"):
+                resume_and_store(thread_id, interrupt_id, action="revise", notes=notes or None)
 
     with col3:
         with st.popover("Edit directly"):
             edited = st.text_area("Replacement letter", value=review.get("letter", ""),
-                                   height=300, key="edit_letter")
-            if st.button("Save edited letter"):
+                                   height=300, key=f"edit_letter_{interrupt_id}")
+            if st.button("Save edited letter", key=f"save_edit_{interrupt_id}"):
                 if not edited.strip():
                     st.error("The letter can't be empty.")
                 else:
-                    resume_and_store(thread_id, action="edit", letter=edited)
+                    resume_and_store(thread_id, interrupt_id, action="edit", letter=edited)
+
+
+RENDER_BY_GATE = {
+    "select_reasons": render_select_reasons,
+    "select_qualifications": render_select_qualifications,
+    "human_review": render_human_review,
+}
 
 
 def render_review() -> None:
-    """Dispatches to whichever gate's UI is currently pending."""
-    gate = st.session_state["pending_review"].get("gate")
-    if gate == "select_reasons":
-        render_select_reasons()
-    elif gate == "select_qualifications":
-        render_select_qualifications()
-    else:
-        render_human_review()
+    """Renders every currently pending gate - normally just one, but select_reasons and
+    select_qualifications can both be ready at once (see agent.py's graph-wiring comment), in
+    which case both show up on the page together, each independently answerable."""
+    reviews = st.session_state["pending_reviews"]
+    for i, review in enumerate(reviews):
+        RENDER_BY_GATE[review["gate"]](review)
+        if i < len(reviews) - 1:
+            st.divider()
 
 
 def render_generate_form() -> None:
@@ -292,7 +304,8 @@ def render_generate_form() -> None:
                 return
 
         if result.get("status") == "pending_review":
-            st.session_state["pending_review"] = {"thread_id": result["thread_id"], **result["review"]}
+            st.session_state["pending_reviews"] = [
+                {"thread_id": result["thread_id"], **r} for r in result["reviews"]]
         else:
             st.session_state["final_result"] = result
         st.rerun()
@@ -302,9 +315,9 @@ def main():
     if not check_password():
         return
 
-    # a paused review or a finished result takes over the whole page until it's resolved, so the
+    # pending review(s) or a finished result take over the whole page until resolved, so the
     # generation form and the review/result views never end up rendered at the same time
-    if st.session_state.get("pending_review"):
+    if st.session_state.get("pending_reviews"):
         render_review()
     elif st.session_state.get("final_result"):
         render_result(st.session_state["final_result"])

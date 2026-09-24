@@ -218,21 +218,27 @@ class CustomQualification(BaseModel):
 
 
 class ResumeRequest(BaseModel):
-    """Covers any gate a thread can be paused at - which fields apply depends on which gate the
-    preceding response's `review.gate` said you're resuming (see agent.py's select_reasons(),
-    select_qualifications() and human_review() docstrings for what each expects).
+    """Covers any single gate a thread can be paused at - which fields apply depends on which
+    gate the entry you're answering (from the preceding response's `reviews` list) named in its
+    `gate` field (see agent.py's select_reasons(), select_qualifications() and human_review()
+    docstrings for what each expects).
 
-    select_reasons: `selected` (indices into that response's `review.reasons`) and/or `custom`
-    (the candidate's own reasons, as plain strings) - both optional, any number (select_reasons
-    itself caps `selected` at 3, silently, same as the notebook's stdin flow).
+    select_reasons: `selected` (indices into that entry's `reasons`) and/or `custom` (the
+    candidate's own reasons, as plain strings) - both optional, any number (select_reasons itself
+    caps `selected` at 3, silently, same as the notebook's stdin flow).
 
-    select_qualifications: `selected` (indices into `review.qualifications`) and/or
+    select_qualifications: `selected` (indices into that entry's `qualifications`) and/or
     `custom_qualifications` (the candidate's own, each needing both a `qualification` and a
     `value_to_team` - no cap on either).
 
     human_review: `action` ("approve" | "edit" | "revise"), plus `letter` (required for "edit")
-    and/or `notes` (optional, for "revise")."""
+    and/or `notes` (optional, for "revise").
+
+    `interrupt_id`: required only when the preceding response's `reviews` list had more than one
+    entry (select_reasons and select_qualifications can become ready in the same tick) - pass the
+    `interrupt_id` of the specific entry this request answers; omit it when there was only one."""
     thread_id: str
+    interrupt_id: Optional[str] = None
     action: Optional[str] = None
     letter: Optional[str] = None
     notes: Optional[str] = None
@@ -256,10 +262,11 @@ class ResumeRequest(BaseModel):
 
 @app.post("/generate/resume")
 def generate_resume(request: ResumeRequest, x_api_key: str = Header(..., alias="X-API-Key")):
-    """Resume a thread that /generate or /generate/upload left "pending_review" - at
-    select_reasons, select_qualifications or human_review, whichever flag paused it. Same
-    response shape as the start call: "completed", or "pending_review" again if there's another
-    gate ahead."""
+    """Resume one pending gate of a thread that /generate or /generate/upload left
+    "pending_review" - select_reasons, select_qualifications or human_review, whichever `reviews`
+    entry this answers (pass its `interrupt_id` if that list had more than one entry). Same
+    response shape as the start call: "completed", or "pending_review" again if another gate is
+    still pending (either one left over from before, or a new one reached further in)."""
     verify_api_key(x_api_key)
     if request.action is not None:
         decision = {"action": request.action}
@@ -275,6 +282,6 @@ def generate_resume(request: ResumeRequest, x_api_key: str = Header(..., alias="
             decision["custom"] = request.custom
 
     try:
-        return agent_resume(request.thread_id, decision)
+        return agent_resume(request.thread_id, decision, request.interrupt_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))

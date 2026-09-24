@@ -869,15 +869,19 @@ for name, fn in [("load", load), ("prepare", prepare), ("research", research),
 
 builder.add_edge(START, "load")
 
-# prepare and research both only need load's output, not each other's - they run concurrently
+# prepare, research and qualify all only need load's output, not each other's - they run
+# concurrently. qualify reads job_ad/cv/past_letters directly (not prepare's closings), so it
+# gets its own edge from load rather than sitting downstream of prepare - that lets its LLM call
+# overlap with research's slow web searches from the start, instead of only starting once
+# research's shared tick with prepare has already cleared
 builder.add_edge("load", "prepare")
 builder.add_edge("load", "research")
+builder.add_edge("load", "qualify")
 
 # para_intro, para_body and para_close are written independently of each other and of one
 # another's output - each only depends on its own upstream branch, so all three run concurrently
 builder.add_edge("research", "select_reasons")
 builder.add_edge("select_reasons", "para_intro")
-builder.add_edge("prepare", "qualify")
 builder.add_edge("qualify", "select_qualifications")
 builder.add_edge("select_qualifications", "para_body")
 builder.add_edge("prepare", "para_close")
@@ -983,15 +987,17 @@ _PROMPT_BY_GATE = {
 
 
 def _invoke_in_process(payload: dict, config: dict) -> dict:
-    """graph.invoke(), resuming past any interrupt with a stdin prompt matched to the gate that
-    raised it - each of select_reasons, select_qualifications and human_review pauses only when
-    its own flag is set (see State), independently of the other two - this loop just keeps
-    resuming until the run actually finishes."""
+    """graph.invoke(), resuming past any interrupt(s) with stdin prompts matched to whichever
+    gate(s) raised them. More than one can be pending at once now that qualify runs off load
+    directly (see the graph-wiring comment) - select_reasons and select_qualifications can land
+    in the same tick, in which case LangGraph requires each answer keyed by its own interrupt id
+    rather than one bare value (a single interrupt still accepts a bare value, but keying by id
+    works either way, so this always does the latter)."""
     result = graph.invoke(payload, config)
     while "__interrupt__" in result:
-        value = result["__interrupt__"][0].value
-        decision = _PROMPT_BY_GATE[value["gate"]](value)
-        result = graph.invoke(Command(resume=decision), config)
+        resume_payload = {i.id: _PROMPT_BY_GATE[i.value["gate"]](i.value)
+                           for i in result["__interrupt__"]}
+        result = graph.invoke(Command(resume=resume_payload), config)
     return result
 
 
@@ -1024,9 +1030,14 @@ def run(payload: dict, studio_url: str = "http://127.0.0.1:2024") -> dict:
 
 
 def _shape(thread_id: str, result: dict) -> dict:
-    if "__interrupt__" in result:
+    """Always a list under "reviews" - even a single pending gate - so callers have one code path
+    regardless of how many interrupts happen to be pending at once. Each entry carries its own
+    interrupt_id, which resume() needs back to say which one a decision answers once there's more
+    than one (see resume()'s docstring)."""
+    interrupts = result.get("__interrupt__")
+    if interrupts:
         return {"status": "pending_review", "thread_id": thread_id,
-                "review": result["__interrupt__"][0].value}
+                "reviews": [dict(i.value, interrupt_id=i.id) for i in interrupts]}
     return {"status": "completed", "thread_id": thread_id,
             **{k: result[k] for k in ("final_letter", "changes", "company", "role") if k in result}}
 
@@ -1044,13 +1055,31 @@ def start(payload: dict) -> dict:
     return _shape(thread_id, result)
 
 
-def resume(thread_id: str, decision: dict) -> dict:
-    """Resume a thread paused at human_review with a decision - see human_review's docstring for
-    the decision shape. Raises ValueError (api.py maps this to a 404) if the thread doesn't
-    exist or isn't currently paused - both look identical to LangGraph (get_state().next is
-    empty either way), which is what's checked here."""
+def resume(thread_id: str, decision: dict, interrupt_id: str = None) -> dict:
+    """Resume one pending gate with a decision - see select_reasons()/select_qualifications()/
+    human_review()'s docstrings for what `decision` should contain for each. Most runs only ever
+    have a single interrupt pending, in which case `interrupt_id` can be omitted. If more than
+    one gate is pending at once (select_reasons and select_qualifications can land in the same
+    tick - see the graph-wiring comment), LangGraph needs to know which one this decision answers;
+    pass the `interrupt_id` from the specific entry in _shape()'s "reviews" list being responded
+    to. Resuming one still leaves any others pending, to be resumed separately.
+
+    Raises ValueError (api.py maps this to a 404) if the thread doesn't exist, isn't currently
+    paused, or interrupt_id is required but missing/doesn't match a pending one."""
     config = {"recursion_limit": 30, "configurable": {"thread_id": thread_id}}
-    if not graph.get_state(config).next:
+    state = graph.get_state(config)
+    if not state.next:
         raise ValueError(f"thread {thread_id!r} has nothing pending to resume")
-    result = graph.invoke(Command(resume=decision), config)
+
+    pending = [i for t in state.tasks for i in t.interrupts]
+    pending_ids = {i.id for i in pending}
+    if len(pending) > 1 and interrupt_id is None:
+        gates = [i.value.get("gate") for i in pending]
+        raise ValueError(f"thread {thread_id!r} has {len(pending)} pending gates {gates} - "
+                          f"resume() needs 'interrupt_id' to say which one this decision answers")
+    if interrupt_id is not None and interrupt_id not in pending_ids:
+        raise ValueError(f"thread {thread_id!r} has no pending interrupt with id {interrupt_id!r}")
+
+    resume_payload = {interrupt_id: decision} if interrupt_id else decision
+    result = graph.invoke(Command(resume=resume_payload), config)
     return _shape(thread_id, result)

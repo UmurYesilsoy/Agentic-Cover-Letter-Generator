@@ -59,10 +59,6 @@ class Config:
     close_words: int = 45
     max_words: int = 400        # hard ceiling for the assembled letter
 
-    # employers NOT listed here are replaced by generic descriptors before anything is written
-    nameable_employers: tuple = ("ASML", "Philips")
-    redact_employers: bool = True
-
     web_search_max_uses: int = 6
     dump_prompts: bool = True   # write every rendered prompt to outputs/.prompts/
 
@@ -166,16 +162,6 @@ def load_inputs() -> dict:
 # Schemas, state and helpers
 # ---------------------------------------------------------------------------
 
-class Employer(BaseModel):
-    real: str = Field(description="the organisation name exactly as written in the CV")
-    generic: str = Field(description="a descriptor precise about industry, region and scale but "
-                                     "never identifying, e.g. 'a Dutch telecommunications operator'")
-
-
-class EmployerList(BaseModel):
-    employers: list[Employer]
-
-
 class Qualification(BaseModel):
     qualification: str = Field(description="education, experience, skill or knowledge")
     evidence: str = Field(description="the specific thing on the CV that establishes it")
@@ -189,8 +175,6 @@ class Qualifications(BaseModel):
 
 
 class Assembled(BaseModel):
-    company: str = Field(description="the hiring company's name, exactly as the ad gives it")
-    role: str = Field(description="the role's title, exactly as the ad gives it")
     letter: str = Field(description="the final cover letter, with every listed problem fixed and "
                                     "duplication/coherence issues across paragraphs resolved")
     changes: list[str] = Field(description="a short list of what was changed and why, for a "
@@ -227,15 +211,22 @@ class State(TypedDict, total=False):
     cv: str
     past_letters: list
 
-    redactions: dict
-    cv_clean: str
-    letters_clean: list
     closings: list
 
     research_notes: str
     sources: list
 
+    # candidate_reasons: research()'s ranked list, offered as a menu by select_reasons().
+    # selected_reasons: what the human actually picked there (plus anything they typed
+    # themselves) - this, not candidate_reasons, is what para_intro writes from.
+    candidate_reasons: list
+    selected_reasons: list
+
+    # qualifications: qualify()'s ranked list, offered as a menu by select_qualifications().
+    # selected_qualifications: what was picked there (plus any custom entries) - this, not
+    # qualifications, is what para_body writes from.
     qualifications: list
+    selected_qualifications: list
     para_intro: str
     para_body: str
     para_close: str
@@ -248,15 +239,16 @@ class State(TypedDict, total=False):
     evaluation_score: int
     revision_count: int
 
-    # set by the caller, not by any node - human_review only pauses on interrupt() when this is
-    # true. The notebook's interactive run sets it; api.py's run_pipeline() doesn't, so the
-    # deployed API keeps auto-approving here and its single-request-response contract is unchanged
-    human_in_the_loop: bool
+    # set by the caller - each gates one node independently, so any combination of the three can
+    # be interactive while the rest run automatically
+    select_reasons_in_the_loop: bool          # select_reasons
+    select_qualifications_in_the_loop: bool   # select_qualifications
+    human_in_the_loop: bool                   # human_review
     human_action: str
 
-    # not otherwise exposed (every other node reads job_ad directly rather than a pre-extracted
-    # copy - see research()/para_intro()/etc.) - kept here only so revise() can re-save the
-    # letter under the same filename assemble() already picked, without a second extraction call
+    # set by research() (see its docstring for why) - used by assemble()/revise() via
+    # save_letter() to name the output file. Not otherwise exposed: every other node still reads
+    # job_ad directly rather than these pre-extracted copies of the same information
     company: str
     role: str
 
@@ -304,12 +296,6 @@ def prose(system: str, user: str, max_tokens: int = 12000) -> str:
 
 
 STYLE_RULES = """- Language: {language}.
-- Every claim carries its evidence in the same sentence. No adjective stands alone as a
-  qualification.
-- Concrete nouns and verbs. If a sentence would survive swapping in a different company or a
-  different candidate, it is filler - cut it.
-- Refer to organisations exactly as the source material names them. Some are described
-  generically on purpose; never substitute a real name or guess at one.
 - Output the paragraph text only. No heading, no preamble, no commentary."""
 
 
@@ -320,13 +306,6 @@ def style() -> str:
 # ---------------------------------------------------------------------------
 # Node: prepare
 # ---------------------------------------------------------------------------
-
-EMPLOYER_SYSTEM = """List every organisation named in this CV as an employer, client, or project
-host - including universities the person studied at.
-
-For each, give the name exactly as written, plus a generic descriptor capturing industry, region
-and scale precisely enough to be meaningful in a cover letter but never identifying. Good: "a
-Dutch telecommunications operator". Bad: "a company", "a well-known tech firm"."""
 
 SIGNOFF = re.compile(r"^(kind regards|yours sincerely|yours faithfully|best regards|sincerely|"
                      r"regards|many thanks|thank you,)", re.I | re.M)
@@ -341,30 +320,12 @@ def extract_closing(letter: str) -> Optional[str]:
 
 
 def prepare(state: State) -> dict:
+    """Pulls a model closing paragraph out of each past letter, for para_close to write from -
+    pure Python, no model call needed to find the end of a letter."""
     letters = state.get("past_letters", [])
     closings = [c for c in (extract_closing(letter) for letter in letters) if c]
-
-    if not cfg.redact_employers:
-        print(f"[prepare] redaction off; {len(closings)} closing paragraph(s) extracted")
-        return {"cv_clean": state["cv"], "letters_clean": letters,
-                "closings": closings, "redactions": {}}
-
-    found = ask(EmployerList, EMPLOYER_SYSTEM, f"CV:\n\n{state['cv']}")
-    allow = {name.strip().lower() for name in cfg.nameable_employers}
-    mapping = {e.real: e.generic for e in found.employers if e.real.strip().lower() not in allow}
-
-    def scrub(text: str) -> str:
-        # longest first, so "Bridgestone Mobility Solutions" goes before "Bridgestone"
-        for real in sorted(mapping, key=len, reverse=True):
-            text = re.sub(rf"\b{re.escape(real)}\b", mapping[real], text, flags=re.IGNORECASE)
-        return text
-
-    print(f"[prepare] {len(found.employers)} organisations, {len(mapping)} redacted, "
-          f"{len(closings)} closing paragraph(s) extracted")
-    return {"cv_clean": scrub(state["cv"]),
-            "letters_clean": [scrub(letter) for letter in letters],
-            "closings": [scrub(c) for c in closings],
-            "redactions": mapping}
+    print(f"[prepare] {len(closings)} closing paragraph(s) extracted")
+    return {"closings": closings}
 
 
 # ---------------------------------------------------------------------------
@@ -391,7 +352,11 @@ response - do not contradict or discard results you already have when writing yo
 JOB ADVERTISEMENT:
 {ad}
 
-Once you are done researching, write your answer as two sections, in this order:
+Once you are done researching, write your answer as four sections, in this order:
+
+COMPANY: the hiring company's name, exactly as the job advertisement gives it.
+
+ROLE: the role's title, exactly as the job advertisement gives it.
 
 FINDINGS:
 - one checkable fact per line, each followed by its source URL in square brackets, e.g. "runs
@@ -408,9 +373,12 @@ REASONS:
 
 
 def research(state: State) -> dict:
-    """Search and ground facts in one call, returning them as a single text field. Company, role
-    and team are not extracted here - the job ad already names them, and every downstream node
-    reads the job ad directly instead of a pre-extracted copy of the same information."""
+    """Search and ground facts in one call, returning them as a single text field, plus the
+    hiring company and role. Extracted here rather than by assemble() (which used to do this) -
+    research() already has to read the job ad closely to know who to search for, so this piggybacks
+    on that instead of assemble() reading the job ad a second time just for two fields. Team is
+    still not extracted separately - only company/role are needed downstream, for the output
+    filename."""
     searcher = ChatAnthropic(model=cfg.model, max_tokens=16000).bind_tools(
         [{"type": "web_search_20260209", "name": "web_search", "max_uses": cfg.web_search_max_uses}])
     prompt = RESEARCH_PROMPT.format(ad=state["job_ad"])
@@ -420,6 +388,24 @@ def research(state: State) -> dict:
     text = result.text if isinstance(result.text, str) else result.text()
     if not text.strip():
         raise RuntimeError("research returned no text - thinking consumed the budget; raise max_tokens.")
+
+    company_match = re.search(r"^COMPANY:\s*(.+)$", text, re.M)
+    role_match = re.search(r"^ROLE:\s*(.+)$", text, re.M)
+    company = company_match.group(1).strip() if company_match else ""
+    role = role_match.group(1).strip() if role_match else ""
+    text = re.sub(r"^(COMPANY|ROLE):.*\n?", "", text, flags=re.M)
+
+    # split the REASONS section into a structured list - select_reasons() offers it as a menu
+    # for a human to choose from, so it comes out of research_notes entirely rather than
+    # staying as free text para_intro would otherwise have picked from on its own
+    parts = re.split(r"^REASONS:\s*$", text, maxsplit=1, flags=re.M)
+    text = parts[0]
+    candidate_reasons = []
+    if len(parts) > 1:
+        for line in parts[1].splitlines():
+            line = line.strip().lstrip("-").strip()
+            if line:
+                candidate_reasons.append(line)
 
     sources, seen = [], set()
     for block in result.content:
@@ -447,21 +433,57 @@ def research(state: State) -> dict:
 
     notes = html.unescape("\n".join(kept)).strip()
 
-    print(f"[research] {len(sources)} sources, {dropped} ungrounded line(s) dropped")
+    print(f"[research] {company!r} / {role!r} - {len(sources)} sources, "
+          f"{len(candidate_reasons)} candidate reasons, {dropped} ungrounded line(s) dropped")
 
-    return {"research_notes": notes, "sources": sources}
+    return {"company": company, "role": role, "research_notes": notes,
+            "candidate_reasons": candidate_reasons, "sources": sources}
+
+
+# ---------------------------------------------------------------------------
+# Node: select_reasons
+# ---------------------------------------------------------------------------
+
+def select_reasons(state: State) -> dict:
+    """Pauses so a human picks which of research()'s candidate reasons para_intro should build
+    the opening paragraph on, and optionally adds their own. Only when
+    select_reasons_in_the_loop is set (independent of select_qualifications_in_the_loop - see
+    State); otherwise falls back to the top 2 by rank, since research() already ranks them
+    most-probable-first.
+
+    Resume with Command(resume=...) where the payload is {"selected": [0, 2], "custom": ["..."]}
+    - `selected` are indices into the `reasons` list the interrupt showed, capped at 3; `custom`
+    is any number of the human's own reasons, added on top."""
+    reasons = state.get("candidate_reasons", [])
+    if not state.get("select_reasons_in_the_loop"):
+        return {"selected_reasons": reasons[:2]}
+
+    print("[select_reasons] waiting for a selection...")
+    decision = interrupt({
+        "gate": "select_reasons",
+        "reasons": reasons,
+    }) or {}
+
+    picked = [reasons[i] for i in decision.get("selected", [])[:3] if 0 <= i < len(reasons)]
+    custom = [r.strip() for r in decision.get("custom", []) if r and r.strip()]
+
+    print(f"[select_reasons] {len(picked)} selected, {len(custom)} custom")
+    return {"selected_reasons": picked + custom}
 
 
 # ---------------------------------------------------------------------------
 # Node: para_intro
 # ---------------------------------------------------------------------------
 
-INTRO_SYSTEM = """Write the opening paragraph of a cover letter for the below job advertisement in light of the research findings about the company/team/role and possible candidate reasons (motivations). Its single job is to answer why
-this candidate wants to work for this company and this team/role (his/her motivation).
+INTRO_SYSTEM = """Write the opening paragraph of a cover letter for the below job advertisement,
+grounded in the research notes about the company/team and built on the candidate's selected
+reasons for wanting this role. Its single job is to answer why this candidate wants to work for
+this company and this team/role (his/her motivation).
 
 - Around {words} words. One paragraph.
-- Build on two strongest of the possible candidate reasons given below. One reason must be
-  about the company and the other must be about the team or the role.
+- Build the paragraph on the candidate's selected reasons given below - these were chosen by the
+  candidate themselves, so use all of them if they fit naturally within the word budget,
+  otherwise prioritise the ones that fit best together.
 - Do not use long sentences.
 - Show understanding of what the company/team actually does.
 - Begin with a salutation on its own line ("Dear Hiring Team," unless the advertisement names
@@ -471,11 +493,13 @@ this candidate wants to work for this company and this team/role (his/her motiva
 
 
 def para_intro(state: State) -> dict:
+    reasons = "\n".join(f"- {r}" for r in state.get("selected_reasons", [])) or "(none selected)"
     text = prose(
         INTRO_SYSTEM.format(words=cfg.intro_words, style=style()),
         f"JOB ADVERTISEMENT:\n{state['job_ad']}\n\n"
-        f"RESEARCH NOTES AND CANDIDATE MOTIVATIONS (the only facts and reasons you may state):\n"
-        f"{state['research_notes']}")
+        f"RESEARCH NOTES (background on the company/team, not reasons to state directly):\n"
+        f"{state['research_notes']}\n\n"
+        f"CANDIDATE'S SELECTED REASONS (build the paragraph on these):\n{reasons}")
 
     print(f"[para_intro] {len(text.split())} words")
     return {"para_intro": text}
@@ -501,15 +525,14 @@ Return six to ten entries, strongest first. Include only what you can evidence -
 list with things the candidate might plausibly know. A short honest list produces a better letter
 than a long hopeful one.
 
-Refer to organisations exactly as the source material names them; some are deliberately
-generic."""
+Refer to organisations exactly as the source material names them."""
 
 
 def qualify(state: State) -> dict:
-    letters = "\n\n--- letter ---\n\n".join(state.get("letters_clean", [])[:3]) or "(none)"
+    letters = "\n\n--- letter ---\n\n".join(state.get("past_letters", [])[:3]) or "(none)"
     result = ask(Qualifications, QUALIFY_SYSTEM,
                  f"JOB ADVERTISEMENT:\n{state['job_ad']}\n\n"
-                 f"CV:\n{state['cv_clean']}\n\n"
+                 f"CV:\n{state['cv']}\n\n"
                  f"PAST COVER LETTERS (for additional detail about the candidate's work):\n{letters}")
 
     items = sorted((q.model_dump() for q in result.items), key=lambda q: -q["relevance"])
@@ -518,6 +541,49 @@ def qualify(state: State) -> dict:
         print(f"    [{item['relevance']}] {item['qualification']}")
         print(f"        value: {item['value_to_team'][:95]}")
     return {"qualifications": items}
+
+
+# ---------------------------------------------------------------------------
+# Node: select_qualifications
+# ---------------------------------------------------------------------------
+
+def select_qualifications(state: State) -> dict:
+    """Pauses so a human picks which of qualify()'s ranked qualifications para_body should build
+    the body paragraph on, and optionally adds their own (qualification + value_to_team only - no
+    evidence field, since that's meant to point at something in the CV; a custom entry gets
+    marked as candidate-supplied instead, and evaluate()'s grounded check is the safety net if it
+    turns out unsupported). No selection cap - para_body's own prompt already says to build on
+    two or three properly rather than listing everything.
+
+    Only when select_qualifications_in_the_loop is set (independent of
+    select_reasons_in_the_loop - see State); otherwise falls back to the top 6 by relevance,
+    exactly what para_body used to take directly before this gate existed.
+
+    Resume with Command(resume=...) where the payload is {"selected": [0, 2],
+    "custom": [{"qualification": "...", "value_to_team": "..."}]} - `selected` are indices into
+    the `qualifications` list the interrupt showed."""
+    qualifications = state.get("qualifications", [])
+    if not state.get("select_qualifications_in_the_loop"):
+        return {"selected_qualifications": qualifications[:6]}
+
+    print("[select_qualifications] waiting for a selection...")
+    decision = interrupt({
+        "gate": "select_qualifications",
+        "qualifications": qualifications,
+    }) or {}
+
+    picked = [qualifications[i] for i in decision.get("selected", []) if 0 <= i < len(qualifications)]
+    custom = []
+    for entry in decision.get("custom", []):
+        qualification = (entry.get("qualification") or "").strip()
+        value_to_team = (entry.get("value_to_team") or "").strip()
+        if qualification and value_to_team:
+            custom.append({"qualification": qualification,
+                            "evidence": "(candidate-supplied, not drawn from the CV)",
+                            "value_to_team": value_to_team, "relevance": 5})
+
+    print(f"[select_qualifications] {len(picked)} selected, {len(custom)} custom")
+    return {"selected_qualifications": picked + custom}
 
 
 # ---------------------------------------------------------------------------
@@ -539,7 +605,7 @@ BODY_SYSTEM = """Write the body of a cover letter: why this candidate is a good 
 
 
 def para_body(state: State) -> dict:
-    chosen = state["qualifications"][:6]
+    chosen = state.get("selected_qualifications", [])
     rendered = "\n\n".join(
         f"[{q['relevance']}/5] {q['qualification']}\n"
         f"    evidence: {q['evidence']}\n"
@@ -576,7 +642,7 @@ def para_close(state: State) -> dict:
     examples = "\n\n--- past closing ---\n\n".join(state.get("closings", [])) or "(none supplied)"
     text = prose(
         CLOSE_SYSTEM.format(words=cfg.close_words, style=style()),
-        f"CANDIDATE: {state['cv_clean'].strip().splitlines()[0]}\n\n"
+        f"CANDIDATE: {state['cv'].strip().splitlines()[0]}\n\n"
         f"JOB ADVERTISEMENT:\n{state['job_ad']}\n\n"
         f"THE CANDIDATE'S OWN PAST CLOSINGS, to model:\n{examples}")
 
@@ -602,8 +668,7 @@ Produce a final, corrected letter:
 - The CV is background context only, to help you edit accurately and consistently - you are not
   checking the letter's claims against it or removing anything for lack of CV support.
 
-Also extract the hiring company's name and the role's title from the job advertisement, and
-report a short list of what you changed and why."""
+Report a short list of what you changed and why."""
 
 PLACEHOLDER_RE = re.compile(r"(\[[A-Za-z][^\]]{0,40}\]|\{\{.*?\}\}|\bTODO\b|\bXXXX?\b)")
 
@@ -627,9 +692,6 @@ def assemble(state: State) -> dict:
         words = len(text.split())
         if words > cfg.max_words:
             problems.append(f"LENGTH: {words} words, limit {cfg.max_words} - cut {words - cfg.max_words}")
-        for real, generic in state.get("redactions", {}).items():
-            if re.search(rf"\b{re.escape(real)}\b", text, flags=re.IGNORECASE):
-                problems.append(f"REDACTION: '{real}' must not be named - use '{generic}'")
         for match in set(PLACEHOLDER_RE.findall(text)):
             problems.append(f"PLACEHOLDER: unfilled {match!r}")
         if not re.match(r"^(dear|to whom)", text.strip(), re.I):
@@ -644,8 +706,7 @@ def assemble(state: State) -> dict:
         print(f"    {problem}")
 
     revised = ask(Assembled, REVISE_SYSTEM,
-                  f"JOB ADVERTISEMENT:\n{state['job_ad']}\n\n"
-                  f"CANDIDATE'S CV (background context only):\n{state['cv_clean']}\n\n"
+                  f"CANDIDATE'S CV (background context only):\n{state['cv']}\n\n"
                   f"PROBLEMS FOUND:\n" + ("\n".join(f"- {p}" for p in problems) or "(none)") + "\n\n"
                   f"LETTER (para_intro, para_body and para_close, written independently):\n"
                   f"---\n{letter}\n---")
@@ -654,11 +715,10 @@ def assemble(state: State) -> dict:
     for change in revised.changes:
         print(f"    - {change}")
 
-    path = save_letter(revised.company, revised.role, revised.letter)
+    path = save_letter(state["company"], state["role"], revised.letter)
     print(f"[assemble] -> {path}")
 
-    return {"final_letter": revised.letter, "changes": revised.changes,
-            "company": revised.company, "role": revised.role}
+    return {"final_letter": revised.letter, "changes": revised.changes}
 
 
 # ---------------------------------------------------------------------------
@@ -686,10 +746,10 @@ exactly what to change. Score `overall_score` 1-5, where 5 means no changes need
 
 
 def evaluate(state: State) -> dict:
-    letters = "\n\n--- past letter ---\n\n".join(state.get("letters_clean", [])) or "(none supplied)"
+    letters = "\n\n--- past letter ---\n\n".join(state.get("past_letters", [])) or "(none supplied)"
     result = ask(LetterEvaluation, EVALUATE_SYSTEM,
                  f"JOB ADVERTISEMENT:\n{state['job_ad']}\n\n"
-                 f"CV:\n{state['cv_clean']}\n\n"
+                 f"CV:\n{state['cv']}\n\n"
                  f"CANDIDATE'S PAST COVER LETTERS:\n{letters}\n\n"
                  f"LETTER TO JUDGE:\n---\n{state['final_letter']}\n---")
 
@@ -714,13 +774,13 @@ Report a short list of what you changed and why."""
 
 
 def revise(state: State) -> dict:
-    letters = "\n\n--- past letter ---\n\n".join(state.get("letters_clean", [])) or "(none supplied)"
+    letters = "\n\n--- past letter ---\n\n".join(state.get("past_letters", [])) or "(none supplied)"
     findings = [f"UNSUPPORTED: {c}" for c in state.get("evaluation_unsupported_claims", [])] \
         + list(state.get("evaluation_issues", []))
 
     result = ask(RevisedLetter, REVISE_LOOP_SYSTEM,
                  f"JOB ADVERTISEMENT:\n{state['job_ad']}\n\n"
-                 f"CV:\n{state['cv_clean']}\n\n"
+                 f"CV:\n{state['cv']}\n\n"
                  f"CANDIDATE'S PAST COVER LETTERS:\n{letters}\n\n"
                  f"EVALUATOR'S FINDINGS:\n" + ("\n".join(f"- {f}" for f in findings) or "(none)") + "\n\n"
                  f"LETTER:\n---\n{state['final_letter']}\n---")
@@ -761,6 +821,7 @@ def human_review(state: State) -> dict:
 
     print("[human_review] waiting for a decision...")
     decision = interrupt({
+        "gate": "human_review",
         "letter": state["final_letter"],
         "score": state.get("evaluation_score"),
         "issues": state.get("evaluation_issues", []),
@@ -799,7 +860,9 @@ def load(state: State) -> dict:
 builder = StateGraph(State)
 
 for name, fn in [("load", load), ("prepare", prepare), ("research", research),
-                 ("para_intro", para_intro), ("qualify", qualify), ("para_body", para_body),
+                 ("select_reasons", select_reasons), ("para_intro", para_intro),
+                 ("qualify", qualify), ("select_qualifications", select_qualifications),
+                 ("para_body", para_body),
                  ("para_close", para_close), ("assemble", assemble),
                  ("evaluate", evaluate), ("revise", revise), ("human_review", human_review)]:
     builder.add_node(name, fn)
@@ -812,9 +875,11 @@ builder.add_edge("load", "research")
 
 # para_intro, para_body and para_close are written independently of each other and of one
 # another's output - each only depends on its own upstream branch, so all three run concurrently
-builder.add_edge("research", "para_intro")
+builder.add_edge("research", "select_reasons")
+builder.add_edge("select_reasons", "para_intro")
 builder.add_edge("prepare", "qualify")
-builder.add_edge("qualify", "para_body")
+builder.add_edge("qualify", "select_qualifications")
+builder.add_edge("select_qualifications", "para_body")
 builder.add_edge("prepare", "para_close")
 
 # assemble is the join: a *list* of start nodes in one add_edge call is what actually makes
@@ -828,7 +893,7 @@ builder.add_conditional_edges("evaluate", route_after_evaluate,
 builder.add_edge("revise", "evaluate")
 builder.add_conditional_edges("human_review", route_after_human_review, {"revise": "revise", END: END})
 
-# a checkpointer is required for human_review's interrupt()/Command(resume=...) to work at all -
+# a checkpointer is required for the interrupt()/Command(resume=...) gates to work at all -
 # InMemorySaver is fine here since a thread only needs to survive one process's lifetime (the
 # notebook kernel, or one `langgraph dev` server run); nothing here needs it to outlive that
 graph = builder.compile(checkpointer=InMemorySaver())
@@ -837,6 +902,52 @@ graph = builder.compile(checkpointer=InMemorySaver())
 # ---------------------------------------------------------------------------
 # Calling the graph
 # ---------------------------------------------------------------------------
+
+def _prompt_select_reasons(payload: dict) -> dict:
+    """Render select_reasons's interrupt payload and collect a selection from stdin."""
+    reasons = payload.get("reasons", [])
+    print("\n" + "=" * 70)
+    print("SELECT REASONS - pick up to 3 for the opening paragraph to build on")
+    for i, r in enumerate(reasons):
+        print(f"  [{i}] {r}")
+    print("-" * 70)
+
+    raw = input("Numbers, comma-separated (blank for none): ").strip()
+    selected = [int(x) for x in raw.split(",") if x.strip().isdigit()][:3] if raw else []
+
+    print("Add your own reasons too, if you like - one per line, blank line to finish:")
+    custom = []
+    while (line := input()) != "":
+        custom.append(line)
+
+    return {"selected": selected, "custom": custom}
+
+
+def _prompt_select_qualifications(payload: dict) -> dict:
+    """Render select_qualifications's interrupt payload and collect a selection from stdin."""
+    qualifications = payload.get("qualifications", [])
+    print("\n" + "=" * 70)
+    print("SELECT QUALIFICATIONS - pick as many as you think are strongest")
+    for i, q in enumerate(qualifications):
+        print(f"  [{i}] [{q['relevance']}/5] {q['qualification']}")
+        print(f"       evidence: {q['evidence']}")
+        print(f"       value to team: {q['value_to_team']}")
+    print("-" * 70)
+
+    raw = input("Numbers, comma-separated (blank for none): ").strip()
+    selected = [int(x) for x in raw.split(",") if x.strip().isdigit()] if raw else []
+
+    custom = []
+    print("Add your own qualifications too, if you like - blank qualification to stop.")
+    while True:
+        qualification = input("Qualification (blank to stop): ").strip()
+        if not qualification:
+            break
+        value_to_team = input("What would this be worth to this team? ").strip()
+        custom.append({"qualification": qualification, "value_to_team": value_to_team})
+
+    return {"selected": selected, "custom": custom}
+
 
 def _prompt_human_review(payload: dict) -> dict:
     """Render human_review's interrupt payload and collect a decision from stdin - the
@@ -864,13 +975,22 @@ def _prompt_human_review(payload: dict) -> dict:
     return {"action": "approve"}
 
 
+_PROMPT_BY_GATE = {
+    "select_reasons": _prompt_select_reasons,
+    "select_qualifications": _prompt_select_qualifications,
+    "human_review": _prompt_human_review,
+}
+
+
 def _invoke_in_process(payload: dict, config: dict) -> dict:
-    """graph.invoke(), resuming past any human_review interrupt with a stdin prompt. Only
-    payloads with human_in_the_loop=True ever actually pause - a plain run just runs straight
-    through, same as before this was added."""
+    """graph.invoke(), resuming past any interrupt with a stdin prompt matched to the gate that
+    raised it - each of select_reasons, select_qualifications and human_review pauses only when
+    its own flag is set (see State), independently of the other two - this loop just keeps
+    resuming until the run actually finishes."""
     result = graph.invoke(payload, config)
     while "__interrupt__" in result:
-        decision = _prompt_human_review(result["__interrupt__"][0].value)
+        value = result["__interrupt__"][0].value
+        decision = _PROMPT_BY_GATE[value["gate"]](value)
         result = graph.invoke(Command(resume=decision), config)
     return result
 
@@ -879,11 +999,11 @@ def run(payload: dict, studio_url: str = "http://127.0.0.1:2024") -> dict:
     """Invoke the graph, routing through a running `langgraph dev` server (so the run shows up
     as a thread in Studio) when one is reachable, falling back to an in-process `graph.invoke`
     otherwise. Every call gets its own thread_id - required by the checkpointer even for runs
-    that never hit human_review's interrupt().
+    that never hit an interrupt (payload sets none of the three *_in_the_loop flags - see State).
 
-    If payload sets human_in_the_loop=True and this goes through Studio, the pause is Studio's
-    own built-in interrupt UI - resume the thread there, not from this function. The in-process
-    fallback instead resumes via stdin prompts (see _invoke_in_process)."""
+    If a gate does pause and this goes through Studio, the pause is Studio's own built-in
+    interrupt UI - resume the thread there, not from this function. The in-process fallback
+    instead resumes via stdin prompts (see _invoke_in_process)."""
     config = {"recursion_limit": 30, "configurable": {"thread_id": str(uuid.uuid4())}}
 
     try:
@@ -912,11 +1032,12 @@ def _shape(thread_id: str, result: dict) -> dict:
 
 
 def start(payload: dict) -> dict:
-    """Start a fresh thread, running until completion or the first human_review interrupt (only
-    reachable when payload sets human_in_the_loop=True - see State). For a programmatic caller
-    (api.py) that drives the review itself via resume() below, rather than the stdin-prompt loop
-    run()/_invoke_in_process use for interactive/local use. Always a plain in-process invoke - no
-    Studio routing, since a deployed server has no Studio to route to."""
+    """Start a fresh thread, running until completion or the first interrupt - each of
+    select_reasons, select_qualifications and human_review pauses only when its own
+    *_in_the_loop flag is set (see State). For a programmatic caller (api.py) that drives each
+    gate itself via resume() below, rather than the stdin-prompt loop run()/_invoke_in_process
+    use for interactive/local use. Always a plain in-process invoke - no Studio routing, since a
+    deployed server has no Studio to route to."""
     thread_id = str(uuid.uuid4())
     config = {"recursion_limit": 30, "configurable": {"thread_id": thread_id}}
     result = graph.invoke(payload, config)

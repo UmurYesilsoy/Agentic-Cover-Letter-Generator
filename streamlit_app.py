@@ -44,15 +44,19 @@ def check_password() -> bool:
     return False
 
 
-def call_generate(cv_file, job_ad_text, job_ad_url, letter_files, human_in_the_loop) -> dict:
-    """POST to /generate/upload - see api.py for the actual contract this mirrors. Returns either
-    {"final_letter": ...} (human_in_the_loop was off) or {"status": "pending_review"|"completed",
-    "thread_id": ..., ...} (it was on) - main() branches on which shape came back."""
+def call_generate(cv_file, job_ad_text, job_ad_url, letter_files, select_reasons_in_the_loop,
+                   select_qualifications_in_the_loop, human_in_the_loop) -> dict:
+    """POST to /generate/upload - see api.py for the actual contract this mirrors. Comes back
+    {"status": "pending_review", ...} if any of the three flags pauses its own gate (reasons,
+    qualifications, or the final letter), otherwise a finished
+    {"status": "completed", "final_letter": ..., ...} in this one call."""
     files = {"cv": (cv_file.name, cv_file.getvalue())}
     for i, letter in enumerate(letter_files[:MAX_PAST_LETTERS], start=1):
         files[f"past_letter_{i}"] = (letter.name, letter.getvalue())
 
-    data = {"human_in_the_loop": str(human_in_the_loop).lower()}
+    data = {"select_reasons_in_the_loop": str(select_reasons_in_the_loop).lower(),
+            "select_qualifications_in_the_loop": str(select_qualifications_in_the_loop).lower(),
+            "human_in_the_loop": str(human_in_the_loop).lower()}
     if job_ad_text:
         data["job_ad"] = job_ad_text
     if job_ad_url:
@@ -65,14 +69,11 @@ def call_generate(cv_file, job_ad_text, job_ad_url, letter_files, human_in_the_l
     return response.json()
 
 
-def call_resume(thread_id, action, letter=None, notes=None) -> dict:
-    """POST to /generate/resume - continues a thread call_generate left "pending_review"."""
-    body = {"thread_id": thread_id, "action": action}
-    if letter is not None:
-        body["letter"] = letter
-    if notes:
-        body["notes"] = notes
-
+def call_resume(thread_id: str, **decision) -> dict:
+    """POST to /generate/resume - continues a thread call_generate left "pending_review". The
+    decision's shape depends on which gate is being resumed - action/letter/notes for
+    human_review, selected/custom for select_reasons (see api.py's ResumeRequest)."""
+    body = {"thread_id": thread_id, **decision}
     headers = {"X-API-Key": st.secrets["APP_API_KEY"]}
     response = httpx.post(f"{API_BASE_URL}/generate/resume", json=body,
                            headers=headers, timeout=REQUEST_TIMEOUT)
@@ -101,12 +102,12 @@ def request_error(exc: Exception) -> str:
     return str(exc)
 
 
-def resume_and_store(thread_id: str, action: str, **kwargs) -> None:
+def resume_and_store(thread_id: str, **decision) -> None:
     """Send a review decision, then stash whatever comes back for the next rerun - another
-    pending_review (a further revise) or a final_result (approve/edit)."""
+    pending_review (the next gate, or a further revise) or a final_result (approve/edit)."""
     with st.spinner("Working..."):
         try:
-            result = call_resume(thread_id, action, **kwargs)
+            result = call_resume(thread_id, **decision)
         except (httpx.HTTPStatusError, httpx.RequestError) as exc:
             st.error(f"Couldn't send your decision: {request_error(exc)}")
             return
@@ -119,7 +120,74 @@ def resume_and_store(thread_id: str, action: str, **kwargs) -> None:
     st.rerun()
 
 
-def render_review() -> None:
+def render_select_reasons() -> None:
+    """The select_reasons gate, surfaced client-side: pick up to 3 of research()'s candidate
+    reasons for the opening paragraph to build on, and optionally add your own."""
+    review = st.session_state["pending_review"]
+    thread_id = review["thread_id"]
+    reasons = review.get("reasons", [])
+
+    st.title("Why do you want this role?")
+    st.caption("Pick up to 3 reasons for the opening paragraph to build on, or write your own.")
+
+    selected_labels = st.multiselect("Candidate reasons (from research)", options=reasons,
+                                      max_selections=3, key="reason_choices")
+    custom_text = st.text_area("Add your own reasons (optional, one per line)",
+                                key="custom_reasons")
+
+    if st.button("Continue", type="primary"):
+        selected = [reasons.index(label) for label in selected_labels]
+        custom = [line.strip() for line in custom_text.splitlines() if line.strip()]
+        if not selected and not custom:
+            st.error("Pick at least one reason, or write your own.")
+        else:
+            resume_and_store(thread_id, selected=selected, custom=custom)
+
+
+def render_select_qualifications() -> None:
+    """The select_qualifications gate, surfaced client-side: pick freely from qualify()'s ranked
+    list for the body paragraph to build on (no cap - para_body's own prompt already says to
+    build on two or three properly rather than listing everything), and optionally add one of
+    your own (qualification + what it's worth to the team - no evidence field, since that's
+    meant to point at something in the CV; evaluate()'s grounded check is the safety net if a
+    custom entry turns out unsupported)."""
+    review = st.session_state["pending_review"]
+    thread_id = review["thread_id"]
+    quals = review.get("qualifications", [])
+
+    st.title("Which qualifications should the letter lead with?")
+    st.caption("Pick as many as you think are strongest - the letter will build on 2-3 of them.")
+
+    with st.expander("See evidence and value-to-team for each"):
+        for q in quals:
+            st.markdown(f"**[{q['relevance']}/5] {q['qualification']}**")
+            st.write(f"Evidence: {q['evidence']}")
+            st.write(f"Value to team: {q['value_to_team']}")
+            st.divider()
+
+    labels = [f"[{q['relevance']}/5] {q['qualification']}" for q in quals]
+    chosen_labels = st.multiselect("Qualifications (from your CV)", options=labels,
+                                    key="qual_choices")
+
+    with st.expander("Add a qualification of your own (optional)"):
+        custom_qual = st.text_input("Qualification", key="custom_qual_title")
+        custom_value = st.text_area("What would this be worth to this team?",
+                                     key="custom_qual_value")
+
+    if st.button("Continue", type="primary"):
+        selected = [i for i, label in enumerate(labels) if label in chosen_labels]
+        custom_qualifications = []
+        if custom_qual.strip() and custom_value.strip():
+            custom_qualifications = [{"qualification": custom_qual.strip(),
+                                       "value_to_team": custom_value.strip()}]
+        if not selected and not custom_qualifications:
+            st.error("Pick at least one qualification, or add your own.")
+        else:
+            resume_and_store(thread_id, selected=selected,
+                              custom_qualifications=custom_qualifications)
+
+
+def render_human_review() -> None:
     """The human_review gate, surfaced client-side: the letter plus the evaluator's score and
     issues, with three ways to respond - mirrors the notebook's own stdin-driven version of this
     same interrupt() payload (see cover_letter_v2.ipynb, "Run it")."""
@@ -142,13 +210,13 @@ def render_review() -> None:
     col1, col2, col3 = st.columns(3)
     with col1:
         if st.button("Approve", type="primary"):
-            resume_and_store(thread_id, "approve")
+            resume_and_store(thread_id, action="approve")
 
     with col2:
         with st.popover("Ask for another revision"):
             notes = st.text_area("Notes for the reviser (optional)", key="revise_notes")
             if st.button("Send for revision"):
-                resume_and_store(thread_id, "revise", notes=notes or None)
+                resume_and_store(thread_id, action="revise", notes=notes or None)
 
     with col3:
         with st.popover("Edit directly"):
@@ -158,7 +226,18 @@ def render_review() -> None:
                 if not edited.strip():
                     st.error("The letter can't be empty.")
                 else:
-                    resume_and_store(thread_id, "edit", letter=edited)
+                    resume_and_store(thread_id, action="edit", letter=edited)
+
+
+def render_review() -> None:
+    """Dispatches to whichever gate's UI is currently pending."""
+    gate = st.session_state["pending_review"].get("gate")
+    if gate == "select_reasons":
+        render_select_reasons()
+    elif gate == "select_qualifications":
+        render_select_qualifications()
+    else:
+        render_human_review()
 
 
 def render_generate_form() -> None:
@@ -181,10 +260,18 @@ def render_generate_form() -> None:
     if len(letter_files) > MAX_PAST_LETTERS:
         st.warning(f"Only the first {MAX_PAST_LETTERS} will be used.")
 
+    select_reasons_in_the_loop = st.checkbox(
+        "Choose your own reasons",
+        help="Pause after research so you can pick which candidate reasons open the letter, "
+             "instead of the top-ranked ones being used automatically.")
+    select_qualifications_in_the_loop = st.checkbox(
+        "Choose your own qualifications",
+        help="Pause after research so you can pick which qualifications the body paragraph "
+             "builds on, instead of the top-ranked ones being used automatically.")
     human_in_the_loop = st.checkbox(
-        "Review before finalizing",
-        help="Pause once a letter is ready so you can approve it, edit it directly, or ask for "
-             "another revision pass, instead of getting the automatic result right away.")
+        "Review the final letter before it's done",
+        help="Pause once the letter is finished so you can approve it, edit it directly, or ask "
+             "for another revision pass - otherwise it finalizes automatically.")
 
     if st.button("Generate my cover letter", type="primary"):
         if cv_file is None:
@@ -198,7 +285,8 @@ def render_generate_form() -> None:
                          "(the server may also need a minute to wake up first)..."):
             try:
                 result = call_generate(cv_file, job_ad_text, job_ad_url, letter_files,
-                                        human_in_the_loop)
+                                        select_reasons_in_the_loop,
+                                        select_qualifications_in_the_loop, human_in_the_loop)
             except (httpx.HTTPStatusError, httpx.RequestError) as exc:
                 st.error(f"Couldn't generate a letter: {request_error(exc)}")
                 return

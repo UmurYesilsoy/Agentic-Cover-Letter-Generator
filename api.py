@@ -8,7 +8,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError, field_validator, model_validator
 
-from agent import fetch_job_from_url, read_document, run
+from agent import fetch_job_from_url, read_document
 from agent import resume as agent_resume
 from agent import start as agent_start
 
@@ -49,9 +49,14 @@ class GenerateRequest(BaseModel):
     job_ad_url: Optional[str] = None
     cv: Optional[str] = None
     past_letters: Optional[list[str]] = None
-    # off by default - when true, the run stops at agent.py's human_review gate instead of
-    # returning a finished letter, and the caller finishes it via POST /generate/resume. Existing
-    # callers that never set this keep getting today's single-call, always-finished response.
+    # Each gates one node independently (see agent.py's State) - any combination can be set.
+    # select_reasons_in_the_loop: pauses at select_reasons (candidate motivations to open the
+    # letter with). select_qualifications_in_the_loop: pauses at select_qualifications
+    # (qualifications to build the body on). human_in_the_loop: pauses at human_review (final-
+    # letter approval). Any one set means /generate returns "pending_review" instead of a
+    # finished letter, and the caller finishes it via one or more POST /generate/resume calls.
+    select_reasons_in_the_loop: bool = False
+    select_qualifications_in_the_loop: bool = False
     human_in_the_loop: bool = False
 
     @field_validator("job_ad")
@@ -103,14 +108,20 @@ def resolve_job_ad(job_ad: Optional[str], job_ad_url: Optional[str]) -> Optional
 
 
 def run_pipeline(job_ad: Optional[str], cv: Optional[str], past_letters: Optional[list[str]],
+                  select_reasons_in_the_loop: bool = False,
+                  select_qualifications_in_the_loop: bool = False,
                   human_in_the_loop: bool = False) -> dict:
+    """Always goes through agent.start(), never agent.run() - agent.run()'s in-process fallback
+    resumes an interrupt via a stdin prompt, which doesn't exist on a server. agent.start() works
+    correctly either way: it returns a finished result in one call when none of the three flags
+    pauses anything, and "pending_review" when one does."""
     payload = {k: v for k, v in
                {"job_ad": job_ad, "cv": cv, "past_letters": past_letters}.items()
                if v is not None}
-    if not human_in_the_loop:
-        return run(payload)                    # unchanged: always finishes in this one call
-    payload["human_in_the_loop"] = True
-    return agent_start(payload)                 # may come back "pending_review" instead
+    payload["select_reasons_in_the_loop"] = select_reasons_in_the_loop
+    payload["select_qualifications_in_the_loop"] = select_qualifications_in_the_loop
+    payload["human_in_the_loop"] = human_in_the_loop
+    return agent_start(payload)
 
 
 def extract_upload_text(upload: UploadFile) -> str:
@@ -144,7 +155,9 @@ def generate(request: GenerateRequest = GenerateRequest(), x_api_key: str = Head
     multi-minute, blocking call in its threadpool instead of on the event loop."""
     verify_api_key(x_api_key)
     job_ad = resolve_job_ad(request.job_ad, request.job_ad_url)
-    return run_pipeline(job_ad, request.cv, request.past_letters, request.human_in_the_loop)
+    return run_pipeline(job_ad, request.cv, request.past_letters,
+                         request.select_reasons_in_the_loop,
+                         request.select_qualifications_in_the_loop, request.human_in_the_loop)
 
 
 @app.post("/generate/upload")
@@ -155,6 +168,8 @@ def generate_from_upload(
     past_letter_1: Optional[UploadFile] = File(None),
     past_letter_2: Optional[UploadFile] = File(None),
     past_letter_3: Optional[UploadFile] = File(None),
+    select_reasons_in_the_loop: bool = Form(False),
+    select_qualifications_in_the_loop: bool = Form(False),
     human_in_the_loop: bool = Form(False),
     x_api_key: str = Header(..., alias="X-API-Key"),
 ):
@@ -175,7 +190,10 @@ def generate_from_upload(
 
     try:
         request = GenerateRequest(cv=cv_text, job_ad=job_ad, job_ad_url=job_ad_url,
-                                   past_letters=letter_texts, human_in_the_loop=human_in_the_loop)
+                                   past_letters=letter_texts,
+                                   select_reasons_in_the_loop=select_reasons_in_the_loop,
+                                   select_qualifications_in_the_loop=select_qualifications_in_the_loop,
+                                   human_in_the_loop=human_in_the_loop)
     except ValidationError as exc:
         # include_context=False - the default errors() embeds the raw ValueError object in
         # each entry's ctx, which isn't JSON-serializable when passed to HTTPException.detail
@@ -189,36 +207,72 @@ def generate_from_upload(
                                                 include_input=False))
 
     job_ad_final = resolve_job_ad(request.job_ad, request.job_ad_url)
-    return run_pipeline(job_ad_final, request.cv, request.past_letters, request.human_in_the_loop)
+    return run_pipeline(job_ad_final, request.cv, request.past_letters,
+                         request.select_reasons_in_the_loop,
+                         request.select_qualifications_in_the_loop, request.human_in_the_loop)
+
+
+class CustomQualification(BaseModel):
+    qualification: str
+    value_to_team: str
 
 
 class ResumeRequest(BaseModel):
+    """Covers any gate a thread can be paused at - which fields apply depends on which gate the
+    preceding response's `review.gate` said you're resuming (see agent.py's select_reasons(),
+    select_qualifications() and human_review() docstrings for what each expects).
+
+    select_reasons: `selected` (indices into that response's `review.reasons`) and/or `custom`
+    (the candidate's own reasons, as plain strings) - both optional, any number (select_reasons
+    itself caps `selected` at 3, silently, same as the notebook's stdin flow).
+
+    select_qualifications: `selected` (indices into `review.qualifications`) and/or
+    `custom_qualifications` (the candidate's own, each needing both a `qualification` and a
+    `value_to_team` - no cap on either).
+
+    human_review: `action` ("approve" | "edit" | "revise"), plus `letter` (required for "edit")
+    and/or `notes` (optional, for "revise")."""
     thread_id: str
-    action: str                     # "approve" | "edit" | "revise"
-    letter: Optional[str] = None    # required when action == "edit"
-    notes: Optional[str] = None     # optional, used when action == "revise"
+    action: Optional[str] = None
+    letter: Optional[str] = None
+    notes: Optional[str] = None
+    selected: Optional[list[int]] = None
+    custom: Optional[list[str]] = None
+    custom_qualifications: Optional[list[CustomQualification]] = None
 
     @model_validator(mode="after")
     def valid_decision(self):
-        if self.action not in {"approve", "edit", "revise"}:
-            raise ValueError("action must be 'approve', 'edit' or 'revise'")
-        if self.action == "edit" and not (self.letter and self.letter.strip()):
-            raise ValueError("action 'edit' requires a non-empty 'letter'")
+        if self.action is not None:
+            if self.action not in {"approve", "edit", "revise"}:
+                raise ValueError("action must be 'approve', 'edit' or 'revise'")
+            if self.action == "edit" and not (self.letter and self.letter.strip()):
+                raise ValueError("action 'edit' requires a non-empty 'letter'")
+        elif self.selected is None and not self.custom and not self.custom_qualifications:
+            raise ValueError("provide either 'action' (resuming human_review), "
+                              "'selected'/'custom' (resuming select_reasons), or "
+                              "'selected'/'custom_qualifications' (resuming select_qualifications)")
         return self
 
 
 @app.post("/generate/resume")
 def generate_resume(request: ResumeRequest, x_api_key: str = Header(..., alias="X-API-Key")):
-    """Resume a thread that /generate or /generate/upload left "pending_review" (human_in_the_loop
-    was true and the run reached agent.py's human_review gate). Same response shape as the start
-    call: either "completed", or "pending_review" again if the decision was itself 'revise' -
-    revise() re-runs evaluate() afterwards, which always lands back on human_review."""
+    """Resume a thread that /generate or /generate/upload left "pending_review" - at
+    select_reasons, select_qualifications or human_review, whichever flag paused it. Same
+    response shape as the start call: "completed", or "pending_review" again if there's another
+    gate ahead."""
     verify_api_key(x_api_key)
-    decision = {"action": request.action}
-    if request.action == "edit":
-        decision["letter"] = request.letter
-    elif request.action == "revise" and request.notes:
-        decision["notes"] = request.notes
+    if request.action is not None:
+        decision = {"action": request.action}
+        if request.action == "edit":
+            decision["letter"] = request.letter
+        elif request.action == "revise" and request.notes:
+            decision["notes"] = request.notes
+    else:
+        decision = {"selected": request.selected or []}
+        if request.custom_qualifications:
+            decision["custom"] = [c.model_dump() for c in request.custom_qualifications]
+        elif request.custom:
+            decision["custom"] = request.custom
 
     try:
         return agent_resume(request.thread_id, decision)

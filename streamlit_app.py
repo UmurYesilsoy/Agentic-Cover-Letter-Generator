@@ -136,16 +136,18 @@ def render_select_reasons(review: dict) -> None:
     st.title("Why do you want this role?")
     st.caption("Pick up to 3 reasons for the opening paragraph to build on, or write your own.")
 
-    selected_labels = st.multiselect("Candidate reasons (from research)", options=reasons,
-                                      max_selections=3, key=f"reason_choices_{interrupt_id}")
+    st.write("**Candidate reasons (from research)**")
+    selected = [i for i, reason in enumerate(reasons)
+                if st.checkbox(reason, key=f"reason_choice_{interrupt_id}_{i}")]
     custom_text = st.text_area("Add your own reasons (optional, one per line)",
                                 key=f"custom_reasons_{interrupt_id}")
 
     if st.button("Continue", type="primary", key=f"reasons_continue_{interrupt_id}"):
-        selected = [reasons.index(label) for label in selected_labels]
         custom = [line.strip() for line in custom_text.splitlines() if line.strip()]
         if not selected and not custom:
             st.error("Pick at least one reason, or write your own.")
+        elif len(selected) > 3:
+            st.error("Pick at most 3 candidate reasons.")
         else:
             resume_and_store(thread_id, interrupt_id, selected=selected, custom=custom)
 
@@ -170,9 +172,10 @@ def render_select_qualifications(review: dict) -> None:
             st.write(f"Value to team: {q['value_to_team']}")
             st.divider()
 
+    st.write("**Qualifications (from your CV)**")
     labels = [f"[{q['relevance']}/5] {q['qualification']}" for q in quals]
-    chosen_labels = st.multiselect("Qualifications (from your CV)", options=labels,
-                                    key=f"qual_choices_{interrupt_id}")
+    selected = [i for i, label in enumerate(labels)
+                if st.checkbox(label, key=f"qual_choice_{interrupt_id}_{i}")]
 
     with st.expander("Add a qualification of your own (optional)"):
         custom_qual = st.text_input("Qualification", key=f"custom_qual_title_{interrupt_id}")
@@ -180,7 +183,6 @@ def render_select_qualifications(review: dict) -> None:
                                      key=f"custom_qual_value_{interrupt_id}")
 
     if st.button("Continue", type="primary", key=f"quals_continue_{interrupt_id}"):
-        selected = [i for i, label in enumerate(labels) if label in chosen_labels]
         custom_qualifications = []
         if custom_qual.strip() and custom_value.strip():
             custom_qualifications = [{"qualification": custom_qual.strip(),

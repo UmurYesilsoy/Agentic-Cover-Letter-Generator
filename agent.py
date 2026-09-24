@@ -183,8 +183,9 @@ class ResearchSummary(BaseModel):
 
 
 class Assembled(BaseModel):
-    letter: str = Field(description="the final cover letter, with every listed problem fixed and "
-                                    "duplication/coherence issues across paragraphs resolved")
+    letter: str = Field(description="the final cover letter - the given opening and body, plus "
+                                    "the closing paragraph you write, with every listed problem "
+                                    "fixed and duplication/coherence issues resolved")
     changes: list[str] = Field(description="a short list of what was changed and why, for a "
                                            "human reviewing the output")
 
@@ -237,7 +238,6 @@ class State(TypedDict, total=False):
     selected_qualifications: list
     para_intro: str
     para_body: str
-    para_close: str
 
     final_letter: str
     changes: list
@@ -328,8 +328,8 @@ def extract_closing(letter: str) -> Optional[str]:
 
 
 def prepare(state: State) -> dict:
-    """Pulls a model closing paragraph out of each past letter, for para_close to write from -
-    pure Python, no model call needed to find the end of a letter."""
+    """Pulls a model closing paragraph out of each past letter, for assemble() to write the new
+    closing from - pure Python, no model call needed to find the end of a letter."""
     letters = state.get("past_letters", [])
     closings = [c for c in (extract_closing(letter) for letter in letters) if c]
     print(f"[prepare] {len(closings)} closing paragraph(s) extracted")
@@ -374,7 +374,7 @@ FINDINGS:
   an adjective: "runs its own delivery fleet" is a fact; "is an innovative company" is not.
 
 REASONS:
-- why a candidate might genuinely want this specific company or this specific team (their
+- why I might genuinely want to work at this specific company or in this specific team (their
   motivations), considering BOTH the findings above AND what the job advertisement itself says
   about the company and the team. Rank them, most probable first.
 """
@@ -484,14 +484,13 @@ def select_reasons(state: State) -> dict:
 # Node: para_intro
 # ---------------------------------------------------------------------------
 
-INTRO_SYSTEM = """Write the opening paragraph of a cover letter for the below job advertisement,
-grounded in the research notes about the company/team and built on the candidate's selected
-reasons for wanting this role. Its single job is to answer why this candidate wants to work for
-this company and this team/role (his/her motivation).
+INTRO_SYSTEM = """Write the opening paragraph of my cover letter for the below job advertisement,
+grounded in the research notes about the company/team and built on my selected
+reasons for wanting this role. Its single job is to answer why I want to work for
+this company and this team/role (my motivation).
 
 - Around {words} words. One paragraph.
-- Build the paragraph on the candidate's selected reasons given below - these were chosen by the
-  candidate themselves, so use all of them if they fit naturally within the word budget,
+- Build the paragraph on my selected reasons given below - these were chosen by me, so use all of them if they fit naturally within the word budget,
   otherwise prioritise the ones that fit best together.
 - Do not use long sentences.
 - Show understanding of what the company/team actually does.
@@ -518,23 +517,18 @@ def para_intro(state: State) -> dict:
 # Node: qualify
 # ---------------------------------------------------------------------------
 
-QUALIFY_SYSTEM = """Identify the candidate's qualifications that matter most for this role, and
-what each would be worth to this specific team.
+QUALIFY_SYSTEM = """Using my CV and past cover letters, identify the qualifications that matter most for this job advertisement, and explain the specific value each qualification would bring to this team.
 
 For each entry:
 - `qualification`: education, experience, skill or knowledge. It needs to be a full sentence.
 - `evidence`: the specific thing in the CV or past letters that establishes it. Quote or closely
   paraphrase. If you cannot point to something concrete, the qualification does not belong here.
-- `value_to_team`: what this would let THIS team do, or do better. Write it from their side, in
-  terms of their problems - not as a restatement of the candidate's experience. This is the most
+- `value_to_team`: what this qualification would let THIS team do, or do better. Write it from their side, in
+  terms of their problems - not as a restatement of the my experience. This is the most
   important field; a generic benefit that would apply to any team means the entry is weak.
 - `relevance`: 1-5 against what the advertisement actually emphasises.
 
-Return six to ten entries, strongest first. Include only what you can evidence - do not pad the
-list with things the candidate might plausibly know. A short honest list produces a better letter
-than a long hopeful one.
-
-Refer to organisations exactly as the source material names them."""
+Return eight entries, strongest first."""
 
 
 def qualify(state: State) -> dict:
@@ -599,15 +593,14 @@ def select_qualifications(state: State) -> dict:
 # Node: para_body
 # ---------------------------------------------------------------------------
 
-BODY_SYSTEM = """Write the body of a cover letter: why this candidate is a good fit for this role.
+BODY_SYSTEM = """Write the body of my cover letter: why I am a good fit for this role.
 
 - Two or three paragraphs, {words} words in total.
 - Use the qualifications supplied, and the evidence given with them. Invent no metric,
   date, tool or responsibility. evidence field shows the specific thing in the CV or past cover letters that establishes the qualification.
-- Mention something the candidate actually did, then connect it to what the team
+- Mention something I actually did, then connect it to what the team
   needs - the `value to team` line tells you what that connection is. The point of the paragraph
-  is what the team gets, not what the candidate has.
-- Build on two or three qualifications properly rather than listing all of them.
+  is what the team gets, not what I have.
 
 
 """ + "{style}"
@@ -630,52 +623,28 @@ def para_body(state: State) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Node: para_close
-# ---------------------------------------------------------------------------
-
-CLOSE_SYSTEM = """Write the closing paragraph of a cover letter.
-
-- Around {words} words. Short.
-- Match the structure and register of the candidate's own past closings, which are given to you.
-  Follow their shape - their length, their level of formality, how they make the ask. Do not copy
-  their sentences word for word; this is a different application.
-- Forward-looking.
-- No new claims about the candidate's experience.
-- End with a sign-off line matching the one the past letters use ("Kind regards," or similar) on
-  its own line, then the candidate's name on the line after it. Both are required.
-
-""" + "{style}"
-
-
-def para_close(state: State) -> dict:
-    examples = "\n\n--- past closing ---\n\n".join(state.get("closings", [])) or "(none supplied)"
-    text = prose(
-        CLOSE_SYSTEM.format(words=cfg.close_words, style=style()),
-        f"CANDIDATE: {state['cv'].strip().splitlines()[0]}\n\n"
-        f"JOB ADVERTISEMENT:\n{state['job_ad']}\n\n"
-        f"THE CANDIDATE'S OWN PAST CLOSINGS, to model:\n{examples}")
-
-    print(f"[para_close] {len(text.split())} words")
-    return {"para_close": text}
-
-
-# ---------------------------------------------------------------------------
 # Node: assemble
 # ---------------------------------------------------------------------------
 
-REVISE_SYSTEM = """You are given a cover letter assembled from three paragraphs - an opening, a
-body and a closing - written independently of each other, plus the candidate's CV for context and
-a list of problems found by deterministic checks.
+REVISE_SYSTEM = """You are given my cover letter's opening and body paragraphs - written
+independently of each other - my own past cover letters' closings (for style), my CV for context, and a list of problems found by deterministic checks.
 
-Produce a final, corrected letter:
+Write the closing paragraph, then produce the final, corrected letter:
+- The closing: around {close_words} words, short, forward-looking, no new claims about my experience or qualifications. Match the structure and register of my
+  own past closings, given below - their length, their level of formality, how they make the ask
+  - without copying their sentences word for word; this is a different application. End with a
+  sign-off line matching the one the past letters use ("Kind regards," or similar) on its own
+  line, then my name on the line after it. Both are required.
+- Keep the total letter, opening and body included, to at most {max_words} words.
 - Fix every problem listed.
-- Because the three paragraphs were written without seeing each other, they may repeat a hook,
-  fact or phrase, or read disjointedly at the paragraph boundaries. Find and fix this: cut or
-  merge repeated points, smooth transitions, keep the tone consistent throughout.
-- You may lightly edit wording for flow and coherence across paragraph boundaries. Do not invent
-  new claims, facts, metrics or responsibilities that are not already present in the letter.
+- Because the opening and body were written without seeing each other, they may repeat a hook,
+  fact or phrase, or read disjointedly at the boundary. Find and fix this: cut or merge repeated
+  points, smooth transitions, and keep the tone consistent throughout, into the closing you write.
+- You may lightly edit wording for flow and coherence. Do not invent new claims, facts, metrics
+  or responsibilities that are not already present in the letter.
 - The CV is background context only, to help you edit accurately and consistently - you are not
   checking the letter's claims against it or removing anything for lack of CV support.
+- Language: {language}.
 
 Report a short list of what you changed and why."""
 
@@ -693,36 +662,45 @@ def save_letter(company: str, role: str, letter: str) -> Path:
 
 
 def assemble(state: State) -> dict:
-    letter = f"{state['para_intro']}\n\n{state['para_body']}\n\n{state['para_close']}".strip()
-    letter = re.sub(r"\n{3,}", "\n\n", letter)
+    intro_and_body = f"{state['para_intro']}\n\n{state['para_body']}".strip()
+    intro_and_body = re.sub(r"\n{3,}", "\n\n", intro_and_body)
 
     def deterministic(text: str) -> list:
+        # LENGTH and SIGN-OFF aren't checked here - the closing (which decides both) doesn't
+        # exist yet at this point, it's written by the same call these problems feed into. They're
+        # checked afterwards instead, against revised.letter - see below.
         problems = []
-        words = len(text.split())
-        if words > cfg.max_words:
-            problems.append(f"LENGTH: {words} words, limit {cfg.max_words} - cut {words - cfg.max_words}")
         for match in set(PLACEHOLDER_RE.findall(text)):
             problems.append(f"PLACEHOLDER: unfilled {match!r}")
         if not re.match(r"^(dear|to whom)", text.strip(), re.I):
             problems.append("SALUTATION: the letter does not open with one")
-        if not SIGNOFF.search("\n".join(text.strip().splitlines()[-3:])):
-            problems.append("SIGN-OFF: no sign-off line before the name")
         return problems
 
-    problems = deterministic(letter)
-    print(f"[assemble] {len(letter.split())} words, {len(problems)} problem(s)")
+    problems = deterministic(intro_and_body)
+    print(f"[assemble] {len(intro_and_body.split())} words (opening+body), {len(problems)} problem(s)")
     for problem in problems:
         print(f"    {problem}")
 
-    revised = ask(Assembled, REVISE_SYSTEM,
+    examples = "\n\n--- past closing ---\n\n".join(state.get("closings", [])) or "(none supplied)"
+
+    revised = ask(Assembled, REVISE_SYSTEM.format(close_words=cfg.close_words, max_words=cfg.max_words,
+                                                   language=cfg.output_language),
                   f"CANDIDATE'S CV (background context only):\n{state['cv']}\n\n"
+                  f"THE CANDIDATE'S OWN PAST CLOSINGS, to model the new closing on:\n{examples}\n\n"
                   f"PROBLEMS FOUND:\n" + ("\n".join(f"- {p}" for p in problems) or "(none)") + "\n\n"
-                  f"LETTER (para_intro, para_body and para_close, written independently):\n"
-                  f"---\n{letter}\n---")
+                  f"LETTER SO FAR (para_intro and para_body, written independently - write the "
+                  f"closing paragraph to follow them):\n"
+                  f"---\n{intro_and_body}\n---")
 
     print(f"[assemble] revised -> {len(revised.letter.split())} words")
     for change in revised.changes:
         print(f"    - {change}")
+
+    words = len(revised.letter.split())
+    if words > cfg.max_words:
+        print(f"    ! LENGTH: {words} words, limit {cfg.max_words} (post-check, not auto-fixed)")
+    if not SIGNOFF.search("\n".join(revised.letter.strip().splitlines()[-3:])):
+        print("    ! SIGN-OFF: no sign-off line before the name (post-check, not auto-fixed)")
 
     path = save_letter(state["company"], state["role"], revised.letter)
     print(f"[assemble] -> {path}")
@@ -872,7 +850,7 @@ for name, fn in [("load", load), ("prepare", prepare), ("research", research),
                  ("select_reasons", select_reasons), ("para_intro", para_intro),
                  ("qualify", qualify), ("select_qualifications", select_qualifications),
                  ("para_body", para_body),
-                 ("para_close", para_close), ("assemble", assemble),
+                 ("assemble", assemble),
                  ("evaluate", evaluate), ("revise", revise), ("human_review", human_review)]:
     builder.add_node(name, fn)
 
@@ -887,18 +865,22 @@ builder.add_edge("load", "prepare")
 builder.add_edge("load", "research")
 builder.add_edge("load", "qualify")
 
-# para_intro, para_body and para_close are written independently of each other and of one
-# another's output - each only depends on its own upstream branch, so all three run concurrently
+# para_intro and para_body are written independently of each other - each only depends on its own
+# upstream branch, so both run concurrently. The closing is no longer a third parallel branch: it's
+# written by assemble() itself (see REVISE_SYSTEM), since assemble already needs to read both
+# paragraphs to merge them - writing the closing there for free avoids a dedicated LLM call for it
 builder.add_edge("research", "select_reasons")
 builder.add_edge("select_reasons", "para_intro")
 builder.add_edge("qualify", "select_qualifications")
 builder.add_edge("select_qualifications", "para_body")
-builder.add_edge("prepare", "para_close")
 
 # assemble is the join: a *list* of start nodes in one add_edge call is what actually makes
-# LangGraph wait for ALL of them - three separate single-source add_edge calls use OR semantics
-# under the hood (assemble becomes eligible as soon as any one finishes), which races para_body
-builder.add_edge(["para_intro", "para_body", "para_close"], "assemble")
+# LangGraph wait for ALL of them - separate single-source add_edge calls use OR semantics under
+# the hood (assemble becomes eligible as soon as any one finishes), which races the others.
+# prepare is included since assemble reads its closings (see REVISE_SYSTEM) - harmless for timing,
+# since prepare (no LLM call) always finishes long before para_intro/para_body do, but without an
+# edge here prepare would dangle straight to END with no visible link to where its output is used
+builder.add_edge(["para_intro", "para_body", "prepare"], "assemble")
 
 builder.add_edge("assemble", "evaluate")
 builder.add_conditional_edges("evaluate", route_after_evaluate,

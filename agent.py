@@ -374,7 +374,7 @@ FINDINGS:
   an adjective: "runs its own delivery fleet" is a fact; "is an innovative company" is not.
 
 REASONS:
-- why I might genuinely want to work at this specific company or in this specific team (their
+- why a candidate might genuinely want to work at this specific company or in this specific team (his/her
   motivations), considering BOTH the findings above AND what the job advertisement itself says
   about the company and the team. Rank them, most probable first.
 """

@@ -174,6 +174,14 @@ class Qualifications(BaseModel):
     items: list[Qualification]
 
 
+class ResearchSummary(BaseModel):
+    company: str = Field(description="the hiring company's name, exactly as it appears")
+    role: str = Field(description="the role's title, exactly as it appears")
+    reasons: list[str] = Field(description="the candidate motivations/reasons listed, exactly as "
+                                           "given, most probable first - do not summarize, "
+                                           "reword or invent any")
+
+
 class Assembled(BaseModel):
     letter: str = Field(description="the final cover letter, with every listed problem fixed and "
                                     "duplication/coherence issues across paragraphs resolved")
@@ -372,13 +380,23 @@ REASONS:
 """
 
 
+EXTRACT_SUMMARY_SYSTEM = """Extract three things from this research answer about a job
+advertisement's hiring company and team:
+
+- `company`: the hiring company's name, exactly as it appears.
+- `role`: the role's title, exactly as it appears.
+- `reasons`: the candidate motivations/reasons listed, as a list of strings, most probable first,
+  exactly as given - do not summarize, reword, merge or invent any."""
+
+
 def research(state: State) -> dict:
     """Search and ground facts in one call, returning them as a single text field, plus the
-    hiring company and role. Extracted here rather than by assemble() (which used to do this) -
-    research() already has to read the job ad closely to know who to search for, so this piggybacks
-    on that instead of assemble() reading the job ad a second time just for two fields. Team is
-    still not extracted separately - only company/role are needed downstream, for the output
-    filename."""
+    hiring company, role and candidate reasons. Extracted via a small structured-output call
+    (below) rather than by regex on the model's own COMPANY:/ROLE:/REASONS: heading formatting -
+    a regex silently comes back empty if the model doesn't format a heading exactly as asked
+    (different casing, markdown emphasis, no trailing blank line), and since this feeds a
+    human-facing picker (select_reasons) it needs to actually be reliable, not just usually
+    right. ask()'s built-in retry-on-malformed-response covers the rest."""
     searcher = ChatAnthropic(model=cfg.model, max_tokens=16000).bind_tools(
         [{"type": "web_search_20260209", "name": "web_search", "max_uses": cfg.web_search_max_uses}])
     prompt = RESEARCH_PROMPT.format(ad=state["job_ad"])
@@ -389,23 +407,14 @@ def research(state: State) -> dict:
     if not text.strip():
         raise RuntimeError("research returned no text - thinking consumed the budget; raise max_tokens.")
 
-    company_match = re.search(r"^COMPANY:\s*(.+)$", text, re.M)
-    role_match = re.search(r"^ROLE:\s*(.+)$", text, re.M)
-    company = company_match.group(1).strip() if company_match else ""
-    role = role_match.group(1).strip() if role_match else ""
-    text = re.sub(r"^(COMPANY|ROLE):.*\n?", "", text, flags=re.M)
+    summary = ask(ResearchSummary, EXTRACT_SUMMARY_SYSTEM, f"RESEARCH ANSWER:\n{text}")
+    company, role, candidate_reasons = summary.company, summary.role, list(summary.reasons)
 
-    # split the REASONS section into a structured list - select_reasons() offers it as a menu
-    # for a human to choose from, so it comes out of research_notes entirely rather than
-    # staying as free text para_intro would otherwise have picked from on its own
-    parts = re.split(r"^REASONS:\s*$", text, maxsplit=1, flags=re.M)
-    text = parts[0]
-    candidate_reasons = []
-    if len(parts) > 1:
-        for line in parts[1].splitlines():
-            line = line.strip().lstrip("-").strip()
-            if line:
-                candidate_reasons.append(line)
+    # best-effort cosmetic trim of the COMPANY:/ROLE:/REASONS: headings out of research_notes -
+    # the actual data is already captured above via the structured call, so this not matching
+    # exactly just leaves those lines sitting in research_notes harmlessly, not a functional bug
+    text = re.sub(r"^(COMPANY|ROLE):.*\n?", "", text, flags=re.M | re.I)
+    text = re.split(r"^\s*#{0,3}\s*\**REASONS\**:?\s*$", text, maxsplit=1, flags=re.M | re.I)[0]
 
     sources, seen = [], set()
     for block in result.content:

@@ -15,7 +15,7 @@ def test_health_endpoint():
     assert response.status_code == 200
     assert response.json() == {
         "status": "ok",
-        "service": "cover-letter-agent",
+        "service": "agentic-cover-letter-generator",
         "version": "1.0",
     }
 

@@ -1,0 +1,35 @@
+Sam Rivera
+
+PROFESSIONAL SUMMARY
+
+Machine learning engineer with five years of experience building and maintaining forecasting and
+recommendation systems in production. Spent the last two years shipping LLM-based internal
+tooling, including a retrieval-grounded support assistant now used daily by a 40-person operations
+team. Comfortable owning a model from first feature to production monitoring, and equally
+comfortable explaining why it made a specific prediction to someone who has to act on it.
+
+EXPERIENCE
+
+Machine Learning Engineer — Fenwick Logistics (2021–present)
+- Rebuilt the company's demand-forecasting pipeline, cutting weekly manual overrides by 60% by
+  fixing the specific failure modes ops staff were routinely working around.
+- Designed and shipped an internal LLM assistant answering shipment-status and pricing questions
+  from structured data, with citations back to the underlying records rather than free-form
+  answers.
+- Introduced automated evaluation for every model change before deployment, catching two
+  regressions pre-launch that would otherwise have reached production pricing decisions.
+
+Data Analyst — Bracken & Wells (2019–2021)
+- Built the team's first proper experimentation framework for pricing tests, replacing ad hoc
+  before/after comparisons that had previously been misattributing seasonal effects to pricing
+  changes.
+
+EDUCATION
+
+MSc Data Science, University of Amsterdam (2019)
+BSc Applied Mathematics, Utrecht University (2017)
+
+SKILLS
+
+Python, PyTorch, SQL, LangGraph/LangChain, production ML monitoring, structured LLM output design,
+stakeholder communication.

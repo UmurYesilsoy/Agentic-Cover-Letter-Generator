@@ -20,7 +20,7 @@ def verify_api_key(x_api_key: str = Header()):
         raise HTTPException(status_code=401, detail="Invalid API key")
 
 
-app = FastAPI()
+app = FastAPI(title="Agentic Cover Letter Generator")
 
 
 @app.exception_handler(RequestValidationError)
@@ -141,7 +141,7 @@ def extract_upload_text(upload: UploadFile) -> str:
 def root():
     return {
         "status": "ok",
-        "service": "cover-letter-agent",
+        "service": "agentic-cover-letter-generator",
         "version": "1.0",
     }
 
@@ -178,10 +178,10 @@ def generate_from_upload(
     never a file, since job postings are normally pasted or linked rather than saved as a
     document. Past letters are three separate optional slots rather than a true file array:
     Swagger UI doesn't reliably render a "choose file" control for an array-of-files field (it
-    fell back to plain text-array inputs), and qualify() only ever reads the first three of
-    whatever's supplied anyway, so three named slots lose nothing. Text extracted from each file
-    is validated through the same GenerateRequest checks /generate uses, so a garbled/empty
-    upload is rejected with a 422 the same way a too-short pasted string is."""
+    fell back to plain text-array inputs), and assess_qualifications() only ever reads the first
+    three of whatever's supplied anyway, so three named slots lose nothing. Text extracted from
+    each file is validated through the same GenerateRequest checks /generate uses, so a
+    garbled/empty upload is rejected with a 422 the same way a too-short pasted string is."""
     verify_api_key(x_api_key)
 
     cv_text = extract_upload_text(cv)
@@ -224,8 +224,7 @@ class ResumeRequest(BaseModel):
     docstrings for what each expects).
 
     select_reasons: `selected` (indices into that entry's `reasons`) and/or `custom` (the
-    candidate's own reasons, as plain strings) - both optional, any number (select_reasons itself
-    caps `selected` at 3, silently, same as the notebook's stdin flow).
+    candidate's own reasons, as plain strings) - both optional, any number, no cap on either.
 
     select_qualifications: `selected` (indices into that entry's `qualifications`) and/or
     `custom_qualifications` (the candidate's own, each needing both a `qualification` and a

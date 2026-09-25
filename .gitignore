@@ -4,3 +4,10 @@ outputs/
 __pycache__/
 .ipynb_checkpoints/
 .streamlit/secrets.toml
+.langgraph_api/
+.DS_Store
+
+# real personal documents - never committed; drop your own here to run the pipeline.
+# inputs/example/ ships a synthetic sample so the repo still runs out of the box for anyone else.
+inputs/*
+!inputs/example/

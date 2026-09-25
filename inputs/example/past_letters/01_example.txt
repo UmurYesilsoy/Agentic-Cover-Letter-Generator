@@ -1,0 +1,16 @@
+Dear Hiring Team,
+
+I'm applying for the Machine Learning Engineer role on your Platform team. Your engineering blog
+post on rebuilding your feature store around event time rather than ingestion time caught my
+attention immediately — it's exactly the kind of unglamorous correctness work that determines
+whether a model is trustworthy six months after launch, not just at the demo.
+
+In my current role I own a forecasting pipeline that fifteen people rely on daily, and the hardest
+lessons I've learned have all been about what happens after a model ships, not before. I'd welcome
+the chance to bring that focus on production correctness to a team clearly already thinking the
+same way.
+
+I'd be glad to talk more about how I could contribute.
+
+Kind regards,
+Sam Rivera

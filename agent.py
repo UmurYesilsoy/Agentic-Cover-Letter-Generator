@@ -1,11 +1,9 @@
-"""Cover letter writing agent - a standalone module extracted from cover_letter_v2.ipynb so it
-can be imported from other notebooks/scripts instead of only running inside that notebook.
+"""Cover letter writing agent - state, prompts, nodes and the compiled graph, all in one
+importable module. This is the single source of truth for the pipeline: api.py runs it in
+production, graph.py re-exports it for LangGraph Studio, and it can be imported directly from a
+notebook or script for interactive use.
 
-cover_letter_v2.ipynb remains untouched and keeps its own copy of this same pipeline for
-interactive editing; this file does not import from it. Keep the two in sync by hand if you
-change prompts/nodes in one and want the change reflected in the other.
-
-Usage from another notebook:
+Usage from a notebook or script:
 
     from agent import load_inputs, run
 
@@ -54,17 +52,20 @@ class Config:
     output_language: str = "English"
 
     # per-section word budgets
-    intro_words: int = 90
-    body_words: int = 190
+    intro_words: int = 95
+    body_words: int = 235
     close_words: int = 45
-    max_words: int = 400        # hard ceiling for the assembled letter
+    max_words: int = 390        # hard ceiling for the assembled letter
 
     web_search_max_uses: int = 6
     dump_prompts: bool = True   # write every rendered prompt to outputs/.prompts/
 
-    # evaluate/revise loop: a score at or above this passes; below it triggers exactly one
-    # revise pass (bounded by State's revision_count, not by this) before returning regardless
+    # evaluate/revise loop (automatic, pre-human_review only - see route_after_evaluate): passes
+    # once overall_score >= this AND coherent/flows_well/grounded/specific are all true AND
+    # there are no unsupported claims, or once max_auto_revisions passes are spent, whichever
+    # comes first - either way, control then goes to human_review, not straight to END
     eval_score_threshold: int = 4
+    max_auto_revisions: int = 3
 
     # anchored to this file's directory, not the caller's cwd, so a notebook importing this
     # module from anywhere still reads/writes the same inputs/outputs as the notebook version
@@ -231,7 +232,8 @@ class State(TypedDict, total=False):
     candidate_reasons: list
     selected_reasons: list
 
-    # qualifications: qualify()'s ranked list, offered as a menu by select_qualifications().
+    # qualifications: assess_qualifications()'s ranked list, offered as a menu by
+    # select_qualifications().
     # selected_qualifications: what was picked there (plus any custom entries) - this, not
     # qualifications, is what para_body writes from.
     qualifications: list
@@ -245,6 +247,10 @@ class State(TypedDict, total=False):
     evaluation_issues: list
     evaluation_unsupported_claims: list
     evaluation_score: int
+    evaluation_grounded: bool
+    evaluation_specific: bool
+    evaluation_coherent: bool
+    evaluation_flows_well: bool
     revision_count: int
 
     # set by the caller - each gates one node independently, so any combination of the three can
@@ -254,7 +260,7 @@ class State(TypedDict, total=False):
     human_in_the_loop: bool                   # human_review
     human_action: str
 
-    # set by research() (see its docstring for why) - used by assemble()/revise() via
+    # set by research() (see its docstring for why) - used by finalize()/revise() via
     # save_letter() to name the output file. Not otherwise exposed: every other node still reads
     # job_ad directly rather than these pre-extracted copies of the same information
     company: str
@@ -312,7 +318,7 @@ def style() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Node: prepare
+# Node: extract_closings
 # ---------------------------------------------------------------------------
 
 SIGNOFF = re.compile(r"^(kind regards|yours sincerely|yours faithfully|best regards|sincerely|"
@@ -327,12 +333,12 @@ def extract_closing(letter: str) -> Optional[str]:
     return paragraphs[-1] if paragraphs else None
 
 
-def prepare(state: State) -> dict:
-    """Pulls a model closing paragraph out of each past letter, for assemble() to write the new
+def extract_closings(state: State) -> dict:
+    """Pulls a model closing paragraph out of each past letter, for finalize() to write the new
     closing from - pure Python, no model call needed to find the end of a letter."""
     letters = state.get("past_letters", [])
     closings = [c for c in (extract_closing(letter) for letter in letters) if c]
-    print(f"[prepare] {len(closings)} closing paragraph(s) extracted")
+    print(f"[extract_closings] {len(closings)} closing paragraph(s) extracted")
     return {"closings": closings}
 
 
@@ -351,11 +357,13 @@ In light of your research and the information given in the job advertisement, fi
 4. Documented engineering or data practice - tech blogs, conference talks, reports.
 5. Stated culture and working practices, in the company's own words where possible.
 
-Call the web_search tool directly for each query. Do not invoke it indirectly through code
-execution or any scripting tool - that path is not supported and will error. If a direct
-web_search call itself errors, only that specific call failed; before concluding search is
-unavailable, check back through every web_search result you already received in this same
-response - do not contradict or discard results you already have when writing your answer.
+You may call web_search directly, or from code execution (e.g. to filter/summarize a large result
+before it enters your context) - both draw from the same shared budget of {max_uses} calls total,
+so don't spend it on exploratory or repeat queries; once it's used up, further calls (either way)
+will fail with a search-quota error rather than a result. If a call does fail for another reason,
+only that specific call failed; before concluding search is unavailable, check back through every
+web_search result you already received in this same response - do not contradict or discard
+results you already have when writing your answer.
 
 JOB ADVERTISEMENT:
 {ad}
@@ -399,7 +407,7 @@ def research(state: State) -> dict:
     right. ask()'s built-in retry-on-malformed-response covers the rest."""
     searcher = ChatAnthropic(model=cfg.model, max_tokens=16000).bind_tools(
         [{"type": "web_search_20260209", "name": "web_search", "max_uses": cfg.web_search_max_uses}])
-    prompt = RESEARCH_PROMPT.format(ad=state["job_ad"])
+    prompt = RESEARCH_PROMPT.format(ad=state["job_ad"], max_uses=cfg.web_search_max_uses)
     log_prompt("(single combined message - no separate system prompt)", prompt, node="research")
 
     result = searcher.invoke([HumanMessage(content=prompt)])
@@ -457,15 +465,15 @@ def select_reasons(state: State) -> dict:
     """Pauses so a human picks which of research()'s candidate reasons para_intro should build
     the opening paragraph on, and optionally adds their own. Only when
     select_reasons_in_the_loop is set (independent of select_qualifications_in_the_loop - see
-    State); otherwise falls back to the top 2 by rank, since research() already ranks them
+    State); otherwise falls back to the top 4 by rank, since research() already ranks them
     most-probable-first.
 
     Resume with Command(resume=...) where the payload is {"selected": [0, 2], "custom": ["..."]}
-    - `selected` are indices into the `reasons` list the interrupt showed, capped at 3; `custom`
+    - `selected` are indices into the `reasons` list the interrupt showed, any number; `custom`
     is any number of the human's own reasons, added on top."""
     reasons = state.get("candidate_reasons", [])
     if not state.get("select_reasons_in_the_loop"):
-        return {"selected_reasons": reasons[:2]}
+        return {"selected_reasons": reasons[:4]}
 
     print("[select_reasons] waiting for a selection...")
     decision = interrupt({
@@ -473,7 +481,7 @@ def select_reasons(state: State) -> dict:
         "reasons": reasons,
     }) or {}
 
-    picked = [reasons[i] for i in decision.get("selected", [])[:3] if 0 <= i < len(reasons)]
+    picked = [reasons[i] for i in decision.get("selected", []) if 0 <= i < len(reasons)]
     custom = [r.strip() for r in decision.get("custom", []) if r and r.strip()]
 
     print(f"[select_reasons] {len(picked)} selected, {len(custom)} custom")
@@ -494,8 +502,7 @@ this company and this team/role (my motivation).
   otherwise prioritise the ones that fit best together.
 - Do not use long sentences.
 - Show understanding of what the company/team actually does.
-- Begin with a salutation on its own line ("Dear Hiring Team," unless the advertisement names
-  someone), then a blank line, then the paragraph.
+- Begin with a salutation on its own line ("Dear Hiring Team,"), then a blank line, then the paragraph.
 
 """ + "{style}"
 
@@ -514,10 +521,10 @@ def para_intro(state: State) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Node: qualify
+# Node: assess_qualifications
 # ---------------------------------------------------------------------------
 
-QUALIFY_SYSTEM = """Using my CV and past cover letters, identify the qualifications that matter most for this job advertisement, and explain the specific value each qualification would bring to this team.
+ASSESS_QUALIFICATIONS_SYSTEM = """Using my CV and past cover letters, identify the qualifications that matter most for this job advertisement, and explain the specific value each qualification would bring to this team.
 
 For each entry:
 - `qualification`: education, experience, skill or knowledge. It needs to be a full sentence.
@@ -531,15 +538,15 @@ For each entry:
 Return eight entries, strongest first."""
 
 
-def qualify(state: State) -> dict:
+def assess_qualifications(state: State) -> dict:
     letters = "\n\n--- letter ---\n\n".join(state.get("past_letters", [])[:3]) or "(none)"
-    result = ask(Qualifications, QUALIFY_SYSTEM,
+    result = ask(Qualifications, ASSESS_QUALIFICATIONS_SYSTEM,
                  f"JOB ADVERTISEMENT:\n{state['job_ad']}\n\n"
                  f"CV:\n{state['cv']}\n\n"
                  f"PAST COVER LETTERS (for additional detail about the candidate's work):\n{letters}")
 
     items = sorted((q.model_dump() for q in result.items), key=lambda q: -q["relevance"])
-    print(f"[qualify] {len(items)} qualifications")
+    print(f"[assess_qualifications] {len(items)} qualifications")
     for item in items[:4]:
         print(f"    [{item['relevance']}] {item['qualification']}")
         print(f"        value: {item['value_to_team'][:95]}")
@@ -551,12 +558,12 @@ def qualify(state: State) -> dict:
 # ---------------------------------------------------------------------------
 
 def select_qualifications(state: State) -> dict:
-    """Pauses so a human picks which of qualify()'s ranked qualifications para_body should build
-    the body paragraph on, and optionally adds their own (qualification + value_to_team only - no
-    evidence field, since that's meant to point at something in the CV; a custom entry gets
-    marked as candidate-supplied instead, and evaluate()'s grounded check is the safety net if it
-    turns out unsupported). No selection cap - para_body's own prompt already says to build on
-    two or three properly rather than listing everything.
+    """Pauses so a human picks which of assess_qualifications()'s ranked qualifications
+    para_body should build the body paragraph on, and optionally adds their own (qualification +
+    value_to_team only - no evidence field, since that's meant to point at something in the CV;
+    a custom entry gets marked as candidate-supplied instead, and evaluate()'s grounded check is
+    the safety net if it turns out unsupported). No selection cap - para_body's own prompt
+    already says to build on two or three properly rather than listing everything.
 
     Only when select_qualifications_in_the_loop is set (independent of
     select_reasons_in_the_loop - see State); otherwise falls back to the top 6 by relevance,
@@ -596,11 +603,11 @@ def select_qualifications(state: State) -> dict:
 BODY_SYSTEM = """Write the body of my cover letter: why I am a good fit for this role.
 
 - Two or three paragraphs, {words} words in total.
-- Use the qualifications supplied, and the evidence given with them. Invent no metric,
+- Use my selected qualifications given below. These were chosen by me, so use all of them if they fit naturally within the word budget, otherwise prioritise the ones that fit best together. Invent no metric,
   date, tool or responsibility. evidence field shows the specific thing in the CV or past cover letters that establishes the qualification.
 - Mention something I actually did, then connect it to what the team
   needs - the `value to team` line tells you what that connection is. The point of the paragraph
-  is what the team gets, not what I have.
+  is what the team gets, not what I have or what I did.
 
 
 """ + "{style}"
@@ -623,7 +630,7 @@ def para_body(state: State) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Node: assemble
+# Node: finalize
 # ---------------------------------------------------------------------------
 
 REVISE_SYSTEM = """You are given my cover letter's opening and body paragraphs - written
@@ -652,7 +659,7 @@ PLACEHOLDER_RE = re.compile(r"(\[[A-Za-z][^\]]{0,40}\]|\{\{.*?\}\}|\bTODO\b|\bXX
 
 
 def save_letter(company: str, role: str, letter: str) -> Path:
-    """Shared by assemble() and revise() - revise() overwrites the same file assemble() already
+    """Shared by finalize() and revise() - revise() overwrites the same file finalize() already
     wrote, under the same name, since a revision doesn't change the company/role it's filed
     under."""
     slug = re.sub(r"[^a-z0-9]+", "-", f"{company}-{role}".lower()).strip("-")[:60]
@@ -661,7 +668,7 @@ def save_letter(company: str, role: str, letter: str) -> Path:
     return path
 
 
-def assemble(state: State) -> dict:
+def finalize(state: State) -> dict:
     intro_and_body = f"{state['para_intro']}\n\n{state['para_body']}".strip()
     intro_and_body = re.sub(r"\n{3,}", "\n\n", intro_and_body)
 
@@ -677,7 +684,7 @@ def assemble(state: State) -> dict:
         return problems
 
     problems = deterministic(intro_and_body)
-    print(f"[assemble] {len(intro_and_body.split())} words (opening+body), {len(problems)} problem(s)")
+    print(f"[finalize] {len(intro_and_body.split())} words (opening+body), {len(problems)} problem(s)")
     for problem in problems:
         print(f"    {problem}")
 
@@ -692,7 +699,7 @@ def assemble(state: State) -> dict:
                   f"closing paragraph to follow them):\n"
                   f"---\n{intro_and_body}\n---")
 
-    print(f"[assemble] revised -> {len(revised.letter.split())} words")
+    print(f"[finalize] revised -> {len(revised.letter.split())} words")
     for change in revised.changes:
         print(f"    - {change}")
 
@@ -703,7 +710,7 @@ def assemble(state: State) -> dict:
         print("    ! SIGN-OFF: no sign-off line before the name (post-check, not auto-fixed)")
 
     path = save_letter(state["company"], state["role"], revised.letter)
-    print(f"[assemble] -> {path}")
+    print(f"[finalize] -> {path}")
 
     return {"final_letter": revised.letter, "changes": revised.changes}
 
@@ -747,7 +754,11 @@ def evaluate(state: State) -> dict:
 
     return {"evaluation_issues": result.issues,
             "evaluation_unsupported_claims": result.unsupported_claims,
-            "evaluation_score": result.overall_score}
+            "evaluation_score": result.overall_score,
+            "evaluation_grounded": result.grounded,
+            "evaluation_specific": result.specific,
+            "evaluation_coherent": result.coherent,
+            "evaluation_flows_well": result.flows_well}
 
 
 REVISE_LOOP_SYSTEM = """You are given a cover letter, an evaluator's findings about it, the
@@ -785,12 +796,27 @@ def revise(state: State) -> dict:
 
 
 def route_after_evaluate(state: State) -> str:
-    """One AUTOMATIC revise pass at most - the same 'one corrective pass, not a loop' rule
-    assemble() already follows, so this can't become the two-gates-arguing failure mode the V1
-    experiment hit. Once the score passes or that one pass is spent, control goes to
-    human_review rather than straight to END - a human gets final say instead of just the
-    threshold, and can still request further revisions themselves from there."""
-    if state.get("evaluation_score", 5) >= cfg.eval_score_threshold or state.get("revision_count", 0) >= 1:
+    """Keeps revising automatically, before a human ever sees the letter, until every check
+    passes - overall_score >= eval_score_threshold, coherent/flows_well/grounded/specific all
+    true, and no unsupported claims - or cfg.max_auto_revisions passes are spent, whichever comes
+    first. Either way, control then goes to human_review rather than straight to END - a human
+    gets final say instead of just the threshold.
+
+    Once a human has actually been through human_review, state["human_action"] is set (see its
+    docstring - this happens every time it runs, whether they approved, edited or asked for a
+    revise) and this always returns "human_review" instead: a human-requested revise gets exactly
+    one more evaluate() pass, then goes straight back to them, rather than re-entering the
+    automatic loop above and its cap - that cap only ever governs the pre-human_review phase."""
+    if state.get("human_action"):
+        return "human_review"
+
+    good_enough = (state.get("evaluation_score", 5) >= cfg.eval_score_threshold
+                   and state.get("evaluation_coherent", True)
+                   and state.get("evaluation_flows_well", True)
+                   and state.get("evaluation_grounded", True)
+                   and state.get("evaluation_specific", True)
+                   and not state.get("evaluation_unsupported_claims"))
+    if good_enough or state.get("revision_count", 0) >= cfg.max_auto_revisions:
         return "human_review"
     return "revise"
 
@@ -799,10 +825,10 @@ def human_review(state: State) -> dict:
     """Pauses for a human decision on the finished letter via interrupt() - only when the caller
     set human_in_the_loop (see State). Resume with Command(resume=...) where the payload is
     {"action": "approve"} | {"action": "edit", "letter": "..."} | {"action": "revise", "notes":
-    "..." (optional)}. A human-requested revise isn't bounded the way the automatic one is: it
-    routes to revise() same as the automatic pass, which loops back to evaluate() and then here
-    again - by then revision_count is >= 1, so route_after_evaluate always lands back on
-    human_review rather than auto-revising a second time."""
+    "..." (optional)}. A human-requested revise isn't capped the way the automatic loop is: it
+    routes to revise() same as an automatic pass, which loops back to evaluate() and then here
+    again - but since this function always sets human_action below, route_after_evaluate sees it
+    set and always lands back on human_review rather than re-entering its own automatic loop."""
     if not state.get("human_in_the_loop"):
         return {"human_action": "approve"}
 
@@ -846,43 +872,46 @@ def load(state: State) -> dict:
 
 builder = StateGraph(State)
 
-for name, fn in [("load", load), ("prepare", prepare), ("research", research),
+for name, fn in [("load", load), ("extract_closings", extract_closings), ("research", research),
                  ("select_reasons", select_reasons), ("para_intro", para_intro),
-                 ("qualify", qualify), ("select_qualifications", select_qualifications),
+                 ("assess_qualifications", assess_qualifications),
+                 ("select_qualifications", select_qualifications),
                  ("para_body", para_body),
-                 ("assemble", assemble),
+                 ("finalize", finalize),
                  ("evaluate", evaluate), ("revise", revise), ("human_review", human_review)]:
     builder.add_node(name, fn)
 
 builder.add_edge(START, "load")
 
-# prepare, research and qualify all only need load's output, not each other's - they run
-# concurrently. qualify reads job_ad/cv/past_letters directly (not prepare's closings), so it
-# gets its own edge from load rather than sitting downstream of prepare - that lets its LLM call
-# overlap with research's slow web searches from the start, instead of only starting once
-# research's shared tick with prepare has already cleared
-builder.add_edge("load", "prepare")
+# extract_closings, research and assess_qualifications all only need load's output, not each
+# other's - they run concurrently. assess_qualifications reads job_ad/cv/past_letters directly
+# (not extract_closings's closings), so it gets its own edge from load rather than sitting
+# downstream of extract_closings - that lets its LLM call overlap with research's slow web
+# searches from the start, instead of only starting once research's shared tick with
+# extract_closings has already cleared
+builder.add_edge("load", "extract_closings")
 builder.add_edge("load", "research")
-builder.add_edge("load", "qualify")
+builder.add_edge("load", "assess_qualifications")
 
 # para_intro and para_body are written independently of each other - each only depends on its own
 # upstream branch, so both run concurrently. The closing is no longer a third parallel branch: it's
-# written by assemble() itself (see REVISE_SYSTEM), since assemble already needs to read both
+# written by finalize() itself (see REVISE_SYSTEM), since finalize already needs to read both
 # paragraphs to merge them - writing the closing there for free avoids a dedicated LLM call for it
 builder.add_edge("research", "select_reasons")
 builder.add_edge("select_reasons", "para_intro")
-builder.add_edge("qualify", "select_qualifications")
+builder.add_edge("assess_qualifications", "select_qualifications")
 builder.add_edge("select_qualifications", "para_body")
 
-# assemble is the join: a *list* of start nodes in one add_edge call is what actually makes
+# finalize is the join: a *list* of start nodes in one add_edge call is what actually makes
 # LangGraph wait for ALL of them - separate single-source add_edge calls use OR semantics under
-# the hood (assemble becomes eligible as soon as any one finishes), which races the others.
-# prepare is included since assemble reads its closings (see REVISE_SYSTEM) - harmless for timing,
-# since prepare (no LLM call) always finishes long before para_intro/para_body do, but without an
-# edge here prepare would dangle straight to END with no visible link to where its output is used
-builder.add_edge(["para_intro", "para_body", "prepare"], "assemble")
+# the hood (finalize becomes eligible as soon as any one finishes), which races the others.
+# extract_closings is included since finalize reads its closings (see REVISE_SYSTEM) - harmless
+# for timing, since extract_closings (no LLM call) always finishes long before para_intro/
+# para_body do, but without an edge here extract_closings would dangle straight to END with no
+# visible link to where its output is used
+builder.add_edge(["para_intro", "para_body", "extract_closings"], "finalize")
 
-builder.add_edge("assemble", "evaluate")
+builder.add_edge("finalize", "evaluate")
 builder.add_conditional_edges("evaluate", route_after_evaluate,
                                {"revise": "revise", "human_review": "human_review"})
 builder.add_edge("revise", "evaluate")
@@ -902,13 +931,13 @@ def _prompt_select_reasons(payload: dict) -> dict:
     """Render select_reasons's interrupt payload and collect a selection from stdin."""
     reasons = payload.get("reasons", [])
     print("\n" + "=" * 70)
-    print("SELECT REASONS - pick up to 3 for the opening paragraph to build on")
+    print("SELECT REASONS - pick as many as you like for the opening paragraph to build on")
     for i, r in enumerate(reasons):
         print(f"  [{i}] {r}")
     print("-" * 70)
 
     raw = input("Numbers, comma-separated (blank for none): ").strip()
-    selected = [int(x) for x in raw.split(",") if x.strip().isdigit()][:3] if raw else []
+    selected = [int(x) for x in raw.split(",") if x.strip().isdigit()] if raw else []
 
     print("Add your own reasons too, if you like - one per line, blank line to finish:")
     custom = []
@@ -979,7 +1008,7 @@ _PROMPT_BY_GATE = {
 
 def _invoke_in_process(payload: dict, config: dict) -> dict:
     """graph.invoke(), resuming past any interrupt(s) with stdin prompts matched to whichever
-    gate(s) raised them. More than one can be pending at once now that qualify runs off load
+    gate(s) raised them. More than one can be pending at once now that assess_qualifications runs off load
     directly (see the graph-wiring comment) - select_reasons and select_qualifications can land
     in the same tick, in which case LangGraph requires each answer keyed by its own interrupt id
     rather than one bare value (a single interrupt still accepts a bare value, but keying by id

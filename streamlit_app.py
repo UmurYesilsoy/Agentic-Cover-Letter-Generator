@@ -24,7 +24,7 @@ MAX_PAST_LETTERS = 3
 # take up to a minute more to wake from an idle "cold start" before the request even starts
 REQUEST_TIMEOUT = 600
 
-st.set_page_config(page_title="Cover Letter Agent", page_icon="✉️")
+st.set_page_config(page_title="Agentic Cover Letter Generator", page_icon="✉️")
 
 
 def check_password() -> bool:
@@ -33,7 +33,7 @@ def check_password() -> bool:
     if st.session_state.get("authenticated"):
         return True
 
-    st.title("Cover Letter Agent")
+    st.title("Agentic Cover Letter Generator")
     password = st.text_input("Password", type="password")
     if st.button("Unlock"):
         if password == st.secrets.get("STREAMLIT_PASSWORD"):
@@ -128,13 +128,13 @@ def resume_and_store(thread_id: str, interrupt_id: str = None, **decision) -> No
 
 
 def render_select_reasons(review: dict) -> None:
-    """The select_reasons gate, surfaced client-side: pick up to 3 of research()'s candidate
+    """The select_reasons gate, surfaced client-side: pick any of research()'s candidate
     reasons for the opening paragraph to build on, and optionally add your own."""
     thread_id, interrupt_id = review["thread_id"], review["interrupt_id"]
     reasons = review.get("reasons", [])
 
     st.title("Why do you want this role?")
-    st.caption("Pick up to 3 reasons for the opening paragraph to build on, or write your own.")
+    st.caption("Pick as many reasons as you like for the opening paragraph to build on, or write your own.")
 
     st.write("**Candidate reasons (from research)**")
     selected = [i for i, reason in enumerate(reasons)
@@ -146,19 +146,17 @@ def render_select_reasons(review: dict) -> None:
         custom = [line.strip() for line in custom_text.splitlines() if line.strip()]
         if not selected and not custom:
             st.error("Pick at least one reason, or write your own.")
-        elif len(selected) > 3:
-            st.error("Pick at most 3 candidate reasons.")
         else:
             resume_and_store(thread_id, interrupt_id, selected=selected, custom=custom)
 
 
 def render_select_qualifications(review: dict) -> None:
-    """The select_qualifications gate, surfaced client-side: pick freely from qualify()'s ranked
-    list for the body paragraph to build on (no cap - para_body's own prompt already says to
-    build on two or three properly rather than listing everything), and optionally add one of
-    your own (qualification + what it's worth to the team - no evidence field, since that's
-    meant to point at something in the CV; evaluate()'s grounded check is the safety net if a
-    custom entry turns out unsupported)."""
+    """The select_qualifications gate, surfaced client-side: pick freely from
+    assess_qualifications()'s ranked list for the body paragraph to build on (no cap - para_body's
+    own prompt already says to build on two or three properly rather than listing everything),
+    and optionally add one of your own (qualification + what it's worth to the team - no
+    evidence field, since that's meant to point at something in the CV; evaluate()'s grounded
+    check is the safety net if a custom entry turns out unsupported)."""
     thread_id, interrupt_id = review["thread_id"], review["interrupt_id"]
     quals = review.get("qualifications", [])
 
@@ -196,8 +194,8 @@ def render_select_qualifications(review: dict) -> None:
 
 def render_human_review(review: dict) -> None:
     """The human_review gate, surfaced client-side: the letter plus the evaluator's score and
-    issues, with three ways to respond - mirrors the notebook's own stdin-driven version of this
-    same interrupt() payload (see cover_letter_v2.ipynb, "Run it")."""
+    issues, with three ways to respond - mirrors agent.py's own stdin-driven version of this same
+    interrupt() payload (see _prompt_human_review)."""
     thread_id, interrupt_id = review["thread_id"], review["interrupt_id"]
 
     st.title("Review your letter")
@@ -255,7 +253,7 @@ def render_review() -> None:
 
 
 def render_generate_form() -> None:
-    st.title("Cover Letter Agent")
+    st.title("Agentic Cover Letter Generator")
     st.caption("Upload your CV, tell us about the role, and get a tailored cover letter.")
 
     cv_file = st.file_uploader("Your CV", type=["txt", "md", "pdf", "docx"])

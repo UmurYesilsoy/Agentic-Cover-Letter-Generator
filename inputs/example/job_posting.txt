@@ -1,0 +1,41 @@
+Machine Learning Engineer
+Amsterdam, Netherlands · Meridian Analytics · Permanent
+
+About the role
+
+Meridian Analytics builds forecasting and pricing tools for mid-sized logistics companies across
+Europe. We're hiring a Machine Learning Engineer to join our small, senior Data team, working
+directly with our Head of Data Science and two other engineers.
+
+You'll own the full lifecycle of our demand-forecasting models: from feature engineering against
+messy, real-world shipment data, through training and evaluation, to deployment and monitoring in
+production. You'll also help us build out our first LLM-powered features — an internal assistant
+that lets ops teams query forecasts and pricing recommendations in plain language.
+
+What you'll do
+
+- Design, train and maintain forecasting models used directly in daily pricing decisions.
+- Build evaluation pipelines that catch model regressions before they reach production, not after.
+- Prototype and ship LLM-based tooling for internal users, with proper grounding and guardrails
+  rather than an ungrounded chatbot bolted onto a dashboard.
+- Work closely with the ops team to understand where model outputs are trusted, ignored, or
+  actively worked around — and fix the underlying reason, not just the symptom.
+- Contribute to our engineering practices: code review, testing, and keeping production systems
+  observable and debuggable.
+
+What we're looking for
+
+- Production experience shipping and maintaining ML systems, not just training notebooks.
+- Comfort working with imperfect, real-world data and building pipelines that degrade gracefully
+  rather than silently producing garbage.
+- Some hands-on experience with LLM-based tooling: prompting, structured output, evaluation, or
+  agentic pipelines.
+- Strong communication — you'll regularly need to explain model behavior to non-technical
+  stakeholders who make real business decisions based on it.
+
+Why Meridian
+
+We're a 12-person team serving a niche most "AI-first" logistics startups ignore: companies too
+small for enterprise software vendors to bother with, but too complex for spreadsheets. Every
+model we ship is used by someone whose job gets measurably easier or harder depending on whether
+it's any good — there's no vanity metric standing between our work and its consequences.

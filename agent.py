@@ -46,6 +46,16 @@ assert os.environ.get("ANTHROPIC_API_KEY"), f"Put ANTHROPIC_API_KEY in {BASE_DIR
 # Configuration
 # ---------------------------------------------------------------------------
 
+def _env_flag(name: str, default: bool) -> bool:
+    """Reads a boolean from the environment, defaulting to `default` when unset - lets local/CLI
+    use keep today's behavior with zero config, while a deployment (Render's dashboard env vars)
+    can flip it off explicitly. See dump_prompts/persist_letters below: both default on, since
+    they're genuinely useful for local/notebook use, but neither belongs in a stateless API
+    deployment writing personal content (CVs, letters) to the server's own disk for no reason."""
+    value = os.environ.get(name)
+    return default if value is None else value.strip().lower() in ("1", "true", "yes", "on")
+
+
 @dataclass
 class Config:
     model: str = "claude-opus-5"
@@ -58,7 +68,14 @@ class Config:
     max_words: int = 390        # hard ceiling for the assembled letter
 
     web_search_max_uses: int = 6
-    dump_prompts: bool = True   # write every rendered prompt to outputs/.prompts/
+    # write every rendered prompt to outputs/.prompts/ (includes CV/job ad/letter text verbatim,
+    # since that's what's interpolated into most prompts) - set DUMP_PROMPTS=false in a
+    # deployment's environment to turn this off
+    dump_prompts: bool = _env_flag("DUMP_PROMPTS", True)
+    # write the finished letter to outputs/ - set PERSIST_LETTERS=false in a deployment's
+    # environment; the API already returns the letter in its response, so a second copy on the
+    # server's own disk serves no purpose there and needlessly retains personal content
+    persist_letters: bool = _env_flag("PERSIST_LETTERS", True)
 
     # evaluate/revise loop (automatic, pre-human_review only - see route_after_evaluate): passes
     # once overall_score >= this AND coherent/flows_well/grounded/specific are all true AND
@@ -658,10 +675,12 @@ Report a short list of what you changed and why."""
 PLACEHOLDER_RE = re.compile(r"(\[[A-Za-z][^\]]{0,40}\]|\{\{.*?\}\}|\bTODO\b|\bXXXX?\b)")
 
 
-def save_letter(company: str, role: str, letter: str) -> Path:
+def save_letter(company: str, role: str, letter: str) -> Optional[Path]:
     """Shared by finalize() and revise() - revise() overwrites the same file finalize() already
     wrote, under the same name, since a revision doesn't change the company/role it's filed
-    under."""
+    under. Skipped entirely when cfg.persist_letters is off (see Config)."""
+    if not cfg.persist_letters:
+        return None
     slug = re.sub(r"[^a-z0-9]+", "-", f"{company}-{role}".lower()).strip("-")[:60]
     path = cfg.outputs_dir / f"{date.today().isoformat()}_{slug}_v2.md"
     path.write_text(letter, encoding="utf-8")
@@ -710,7 +729,8 @@ def finalize(state: State) -> dict:
         print("    ! SIGN-OFF: no sign-off line before the name (post-check, not auto-fixed)")
 
     path = save_letter(state["company"], state["role"], revised.letter)
-    print(f"[finalize] -> {path}")
+    if path:
+        print(f"[finalize] -> {path}")
 
     return {"final_letter": revised.letter, "changes": revised.changes}
 
@@ -788,7 +808,8 @@ def revise(state: State) -> dict:
         print(f"    - {change}")
 
     path = save_letter(state["company"], state["role"], result.letter)
-    print(f"[revise] -> {path}")
+    if path:
+        print(f"[revise] -> {path}")
 
     return {"final_letter": result.letter,
             "changes": state.get("changes", []) + result.changes,

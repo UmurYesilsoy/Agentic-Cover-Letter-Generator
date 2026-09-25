@@ -144,7 +144,8 @@ All in `agent.py`'s `Config` dataclass:
 | `web_search_max_uses` | 6 | Shared budget across direct `web_search` calls *and* any the model makes from code execution. |
 | `eval_score_threshold` | 4 | `evaluate`'s overall_score bar (out of 5) to stop auto-revising. |
 | `max_auto_revisions` | 3 | Cap on automatic evaluate→revise passes before falling through to human review regardless. |
-| `dump_prompts` | `True` | Writes every rendered prompt to `outputs/.prompts/<node>.md`. |
+| `dump_prompts` | `True`, env `DUMP_PROMPTS` | Writes every rendered prompt (includes CV/job ad/letter text verbatim) to `outputs/.prompts/<node>.md`. Useful for local prompt debugging; set `DUMP_PROMPTS=false` in a deployment's environment to turn it off. |
+| `persist_letters` | `True`, env `PERSIST_LETTERS` | Writes the finished letter to `outputs/`. The API already returns it in the response, so this is only useful for local/CLI use; set `PERSIST_LETTERS=false` in a deployment's environment so the server doesn't keep a second copy of personal content on its own disk. |
 
 ## API
 

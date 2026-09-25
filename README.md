@@ -180,5 +180,5 @@ Being upfront about what this doesn't handle yet:
   polling for status instead of holding one long-lived request open.
 - **No offline eval set.** Quality is currently judged only by the LLM-judge *inside* the pipeline
   (`evaluate`); there's no held-out set of (job ad, CV) pairs with a rubric to measure quality
-  changes across prompt iterations objectively.
+  changes consistently across prompt, model, and graph iterations.
 - **No rate limiting / CORS policy** on the API beyond the shared API key.

@@ -7,15 +7,48 @@ bounded self-correction loop, and a final human approval gate. Deployed as a Fas
 
 ## Architecture
 
-```
-               ┌─> extract_closings ──────────────────────────────────────────────┐
-START ─> load ─┼─> research ──> select_reasons ──> para_intro ────────────────────┼─> finalize ─> END
-               └─> assess_qualifications ──> select_qualifications ──> para_body ─┘
+```mermaid
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	load(load)
+	extract_closings(extract_closings)
+	research(research)
+	select_reasons(select_reasons)
+	para_intro(para_intro)
+	assess_qualifications(assess_qualifications)
+	select_qualifications(select_qualifications)
+	para_body(para_body)
+	finalize(finalize)
+	evaluate(evaluate)
+	revise(revise)
+	human_review(human_review)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> load;
+	assess_qualifications --> select_qualifications;
+	evaluate -.-> human_review;
+	evaluate -.-> revise;
+	extract_closings --> finalize;
+	finalize --> evaluate;
+	human_review -.-> __end__;
+	human_review -.-> revise;
+	load --> assess_qualifications;
+	load --> extract_closings;
+	load --> research;
+	para_body --> finalize;
+	para_intro --> finalize;
+	research --> select_reasons;
+	revise --> evaluate;
+	select_qualifications --> para_body;
+	select_reasons --> para_intro;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc
 ```
 
-`finalize` isn't quite the end of the graph — it feeds an evaluate/revise loop (bounded, capped at
-`max_auto_revisions` automatic passes) and then a human review gate before the graph actually
-reaches `END`. See [Nodes](#nodes) below.
+Generated straight from the compiled graph (`agent.graph.get_graph().draw_mermaid()`), so it can't
+drift out of sync with the actual node/edge wiring. Dashed arrows are the conditional edges -
+`evaluate`'s pass/revise branch and `human_review`'s approve/revise branch - both bounded (see
+`max_auto_revisions` in [Configuration](#configuration)) rather than open-ended loops.
 
 ### Nodes
 

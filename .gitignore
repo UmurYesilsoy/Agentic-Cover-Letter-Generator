@@ -13,3 +13,6 @@ __pycache__/
 # inputs/example/ ships a synthetic sample so the repo still runs out of the box for anyone else.
 inputs/*
 !inputs/example/
+
+# Terraform
+.terraform/

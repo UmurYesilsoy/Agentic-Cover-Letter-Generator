@@ -16,3 +16,6 @@ inputs/*
 
 # Terraform
 .terraform/
+
+terraform.tfstate
+terraform.tfstate.*
